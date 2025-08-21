@@ -39,29 +39,27 @@ export default function AdminPage() {
 
   const [brands, setBrands] = useState([]);
   const [loadingBrands, setLoadingBrands] = useState(false);
+  const [savingId, setSavingId] = useState(null);
 
   useEffect(() => {
     let alive = true;
     async function bootstrap() {
-      try {
-        const { data } = await supabase.auth.getSession();
-        const s = data?.session ?? null;
-        if (!alive) return;
-        setSession(s);
+      const { data } = await supabase.auth.getSession();
+      const s = data?.session ?? null;
+      if (!alive) return;
+      setSession(s);
 
-        if (s?.user?.id) {
-          const { data: prof } = await supabase
-            .from("profiles")
-            .select("role")
-            .eq("user_id", s.user.id)
-            .maybeSingle();
-          setRole(prof?.role ?? null);
-        } else {
-          setRole(null);
-        }
-      } finally {
-        if (alive) setLoading(false);
+      if (s?.user?.id) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("user_id", s.user.id)
+          .maybeSingle();
+        setRole(prof?.role ?? null);
+      } else {
+        setRole(null);
       }
+      setLoading(false);
     }
     bootstrap();
 
@@ -88,31 +86,50 @@ export default function AdminPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!session || role !== "admin") return;
-    let alive = true;
+  async function loadBrands() {
     setLoadingBrands(true);
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from("brands")
-          .select("id,name,slug,description,logo_url,instagram_url,active,deleted_at,created_at")
-          .order("created_at", { ascending: false });
-        if (error) throw error;
-        if (alive) setBrands(data ?? []);
-      } catch (_e) {
-        if (alive) setBrands([]);
-      } finally {
-        if (alive) setLoadingBrands(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+    try {
+      const { data, error } = await supabase
+        .from("brands")
+        .select("id,name,slug,description,logo_url,instagram_url,active,deleted_at,created_at")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setBrands(data ?? []);
+    } catch {
+      setBrands([]);
+    } finally {
+      setLoadingBrands(false);
+    }
+  }
+
+  useEffect(() => {
+    if (session && role === "admin") loadBrands();
   }, [session, role]);
 
   const logout = async () => {
     await supabase.auth.signOut();
+  };
+
+  const togglePublic = async (brand) => {
+    try {
+      setSavingId(brand.id);
+      // si activamos, borramos deleted_at; si desactivamos, sólo active=false
+      const updates = brand.active
+        ? { active: false }
+        : { active: true, deleted_at: null };
+      const { error } = await supabase
+        .from("brands")
+        .update(updates)
+        .eq("id", brand.id);
+      if (error) throw error;
+      // refrescar lista (o actualizar optimist)
+      setBrands((prev) => prev.map((b) => (b.id === brand.id ? { ...b, ...updates } : b)));
+    } catch (e) {
+      // noop, podríamos mostrar toast si tenés sistema
+      console.error("No se pudo actualizar la marca:", e.message);
+    } finally {
+      setSavingId(null);
+    }
   };
 
   if (loading) {
@@ -230,10 +247,22 @@ export default function AdminPage() {
                     {b.description || "—"}
                   </p>
 
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+                    <label className="chip" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={!!b.active}
+                        disabled={savingId === b.id}
+                        onChange={() => togglePublic(b)}
+                        aria-label={b.active ? "Despublicar" : "Publicar"}
+                      />
+                      {savingId === b.id ? "Guardando..." : b.active ? "Pública" : "Privada"}
+                    </label>
+
                     <Link className="btn ghost" href={`/marcas/${b.slug}`} target="_blank">
                       Ver pública
                     </Link>
+
                     {b.instagram_url ? (
                       <a href={b.instagram_url} target="_blank" rel="noreferrer" className="btn ghost">
                         Instagram
