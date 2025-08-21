@@ -6,7 +6,6 @@ import Image from "next/image";
 import "@/styles/globals.css";
 import { supabase } from "@/lib/supabaseClient";
 
-// Hook: cerrar menú al click afuera
 function useClickAway(ref, onAway) {
   useEffect(() => {
     function handler(e) {
@@ -18,7 +17,7 @@ function useClickAway(ref, onAway) {
   }, [ref, onAway]);
 }
 
-function Header({ isAdmin, session }) {
+function Header({ role, session }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
   useClickAway(menuRef, () => setOpen(false));
@@ -29,7 +28,6 @@ function Header({ isAdmin, session }) {
     session?.user?.email ||
     null;
 
-  // LOGIN — siempre volver al MISMO dominio (preview o prod)
   const signInWithGoogle = async () => {
     setOpen(false);
     await supabase.auth.signInWithOAuth({
@@ -48,28 +46,34 @@ function Header({ isAdmin, session }) {
     await supabase.auth.signOut();
   };
 
+  const isAdmin = role === "admin";
+  const isVendor = role === "vendor";
+
   return (
     <header className="header" role="banner">
       <div className="header-inner container" style={{ gap: 12, display: "flex", alignItems: "center" }}>
-        {/* IZQUIERDA: CABURE.STORE */}
+        {/* IZQUIERDA */}
         <Link href="/" className="brand" aria-label="Ir al inicio CABURE.STORE">
           <Image src="/cabure-logo.png" alt="" width={28} height={28} priority />
           <span>CABURE.STORE</span>
         </Link>
 
-        {/* ESPACIADOR */}
         <div style={{ flex: 1 }} />
 
-        {/* DERECHA: sesión / admin */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {/* DERECHA */}
+        <nav aria-label="Accesos" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {(isVendor || isAdmin) && (
+            <Link className="btn secondary" href="/vendor" aria-label="Vendor">
+              Vendor
+            </Link>
+          )}
           {isAdmin && (
-            <Link className="btn secondary" href="/admin" aria-label="Ir a admin">
+            <Link className="btn secondary" href="/admin" aria-label="Admin">
               Admin
             </Link>
           )}
 
-          {/* NO logueado → botón Iniciar sesión con menú (Google por ahora) */}
-          {!session && (
+          {!session ? (
             <div ref={menuRef} style={{ position: "relative" }}>
               <button
                 className="btn ghost"
@@ -79,7 +83,6 @@ function Header({ isAdmin, session }) {
               >
                 Iniciar sesión
               </button>
-
               {open && (
                 <div
                   role="menu"
@@ -105,6 +108,7 @@ function Header({ isAdmin, session }) {
                     aria-label="Continuar con Google"
                   >
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      {/* ícono Google */}
                       <svg width="18" height="18" viewBox="0 0 533.5 544.3" aria-hidden="true">
                         <path fill="#4285F4" d="M533.5 278.4c0-18.5-1.7-36.3-4.9-53.6H272v101.4h147.1c-6.4 34.6-25.9 63.9-55.2 83.6v69.4h89.3c52.2-48.1 80.3-119 80.3-200.8z"/>
                         <path fill="#34A853" d="M272 544.3c73 0 134.3-24.2 179.1-65.5l-89.3-69.4c-24.8 16.7-56.5 26.6-89.8 26.6-69 0-127.5-46.6-148.5-109.2H31v68.5C75.9 495.3 168.8 544.3 272 544.3z"/>
@@ -117,10 +121,7 @@ function Header({ isAdmin, session }) {
                 </div>
               )}
             </div>
-          )}
-
-          {/* Logueado → nombre + menú (Soporte / Cerrar sesión) */}
-          {session && (
+          ) : (
             <div ref={menuRef} style={{ position: "relative" }}>
               <button
                 className="btn ghost"
@@ -156,19 +157,14 @@ function Header({ isAdmin, session }) {
                   >
                     Soporte
                   </Link>
-                  <button
-                    className="btn ghost"
-                    role="menuitem"
-                    style={{ width: "100%" }}
-                    onClick={logout}
-                  >
+                  <button className="btn ghost" role="menuitem" style={{ width: "100%" }} onClick={logout}>
                     Cerrar sesión
                   </button>
                 </div>
               )}
             </div>
           )}
-        </div>
+        </nav>
       </div>
     </header>
   );
@@ -176,12 +172,10 @@ function Header({ isAdmin, session }) {
 
 export default function MyApp({ Component, pageProps }) {
   const [session, setSession] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [role, setRole] = useState(null); // 'admin' | 'vendor' | null
 
-  // Cargar sesión + rol en cliente
   useEffect(() => {
     let mounted = true;
-
     async function load() {
       const { data: sess } = await supabase.auth.getSession();
       const s = sess?.session ?? null;
@@ -193,9 +187,9 @@ export default function MyApp({ Component, pageProps }) {
           .select("role")
           .eq("user_id", s.user.id)
           .maybeSingle();
-        if (mounted) setIsAdmin(prof?.role === "admin");
+        if (mounted) setRole(prof?.role ?? null);
       } else {
-        if (mounted) setIsAdmin(false);
+        if (mounted) setRole(null);
       }
     }
     load();
@@ -210,9 +204,9 @@ export default function MyApp({ Component, pageProps }) {
             .select("role")
             .eq("user_id", s.user.id)
             .maybeSingle();
-          setIsAdmin(prof?.role === "admin");
+          setRole(prof?.role ?? null);
         } else {
-          setIsAdmin(false);
+          setRole(null);
         }
       })();
     });
@@ -237,8 +231,7 @@ export default function MyApp({ Component, pageProps }) {
         )}
       </Head>
 
-      <Header isAdmin={isAdmin} session={session} />
-
+      <Header role={role} session={session} />
       <main className="container">
         <Component {...pageProps} />
       </main>
