@@ -40,26 +40,34 @@ export default function AdminPage() {
   const [brands, setBrands] = useState([]);
   const [loadingBrands, setLoadingBrands] = useState(false);
   const [savingId, setSavingId] = useState(null);
+  const [uiError, setUiError] = useState("");
 
   useEffect(() => {
     let alive = true;
     async function bootstrap() {
-      const { data } = await supabase.auth.getSession();
-      const s = data?.session ?? null;
-      if (!alive) return;
-      setSession(s);
+      try {
+        const { data } = await supabase.auth.getSession();
+        const s = data?.session ?? null;
+        if (!alive) return;
+        setSession(s);
 
-      if (s?.user?.id) {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", s.user.id)
-          .maybeSingle();
-        setRole(prof?.role ?? null);
-      } else {
-        setRole(null);
+        if (s?.user?.id) {
+          const { data: prof, error } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("user_id", s.user.id)
+            .maybeSingle();
+          if (error) {
+            setRole(null);
+          } else {
+            setRole(prof?.role ?? null);
+          }
+        } else {
+          setRole(null);
+        }
+      } finally {
+        if (alive) setLoading(false);
       }
-      setLoading(false);
     }
     bootstrap();
 
@@ -88,6 +96,7 @@ export default function AdminPage() {
 
   async function loadBrands() {
     setLoadingBrands(true);
+    setUiError("");
     try {
       const { data, error } = await supabase
         .from("brands")
@@ -95,7 +104,9 @@ export default function AdminPage() {
         .order("created_at", { ascending: false });
       if (error) throw error;
       setBrands(data ?? []);
-    } catch {
+    } catch (e) {
+      console.error("Error cargando marcas:", e);
+      setUiError("No se pudieron cargar las marcas.");
       setBrands([]);
     } finally {
       setLoadingBrands(false);
@@ -111,22 +122,29 @@ export default function AdminPage() {
   };
 
   const togglePublic = async (brand) => {
+    setUiError("");
     try {
       setSavingId(brand.id);
-      // si activamos, borramos deleted_at; si desactivamos, sólo active=false
       const updates = brand.active
         ? { active: false }
         : { active: true, deleted_at: null };
+
       const { error } = await supabase
         .from("brands")
         .update(updates)
         .eq("id", brand.id);
-      if (error) throw error;
-      // refrescar lista (o actualizar optimist)
+
+      if (error) {
+        console.error("RLS/Update error:", error);
+        setUiError(error.message || "No se pudo guardar el estado de la marca.");
+        return;
+      }
+
+      // Optimistic UI
       setBrands((prev) => prev.map((b) => (b.id === brand.id ? { ...b, ...updates } : b)));
     } catch (e) {
-      // noop, podríamos mostrar toast si tenés sistema
-      console.error("No se pudo actualizar la marca:", e.message);
+      console.error("Toggle public error:", e);
+      setUiError(e.message || "No se pudo actualizar la marca.");
     } finally {
       setSavingId(null);
     }
@@ -184,7 +202,13 @@ export default function AdminPage() {
           <button className="btn ghost" onClick={logout}>Cerrar sesión</button>
         </div>
 
-        <section className="card" style={{ padding: 16, marginBottom: 16 }}>
+        {uiError ? (
+          <div className="card" style={{ padding: 12, border: "1px solid #a33" }}>
+            {uiError}
+          </div>
+        ) : null}
+
+        <section className="card" style={{ padding: 16, marginTop: 12 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <h2 style={{ margin: 0 }}>Marcas</h2>
             <Link href="/admin/support" className="btn secondary">Ver Soporte</Link>
