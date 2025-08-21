@@ -1,180 +1,101 @@
+// pages/index.jsx
+import React, { useEffect, useState, useMemo } from "react";
 import Head from "next/head";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
 
 export default function Home() {
-  const [brands, setBrands] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [brands, setBrands] = useState(null);
+  const [q, setQ] = useState("");
 
-  // Traer marcas desde Supabase
   useEffect(() => {
-    const fetchBrands = async () => {
-      try {
-        const { data, error } = await supabase.from("brands").select("*").order("name", { ascending: true });
-        if (error) throw error;
-        setBrands(data || []);
-      } catch (err) {
-        console.error("Error cargando marcas:", err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchBrands();
+    (async () => {
+      const { data, error } = await supabase
+        .from("brands")
+        .select("id,name,slug,description,logo_url,color,active,deleted_at")
+        .eq("active", true)
+        .is("deleted_at", null)
+        .order("name", { ascending: true });
+      if (!error) setBrands(data || []);
+      else setBrands([]);
+    })();
   }, []);
+
+  const filtered = useMemo(() => {
+    if (!brands) return null;
+    if (!q) return brands;
+    return brands.filter((b) => b.name.toLowerCase().includes(q.toLowerCase()));
+  }, [brands, q]);
 
   return (
     <>
       <Head>
-        <title>CABURE.STORE</title>
-        <meta name="description" content="Caburé Store — Moda, música y lifestyle." />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>CABURE.STORE — Marcas</title>
+        <meta name="description" content="Tienda colectiva de marcas jóvenes. Oscuro, urbano, limpio." />
       </Head>
 
-      {/* Hero principal */}
-      <section className="hero">
-        <div className="hero-content">
-          <h1 className="hero-title">CABURE.STORE</h1>
-          <p className="hero-subtitle">Donde moda, música y cultura se encuentran.</p>
-          <Link href="/productos" className="btn-primary">
-            Ver productos
-          </Link>
-        </div>
+      {/* Hero minimal */}
+      <section style={{ margin: "28px 0 16px" }}>
+        <h1 style={{ marginBottom: 8 }}>Marcas</h1>
+        <p style={{ color: "var(--text-dim)" }}>
+          Descubrí colecciones curadas de marcas jóvenes.
+        </p>
       </section>
 
-      {/* Marcas */}
-      <section className="brands">
-        <h2 className="section-title">Marcas destacadas</h2>
+      {/* Buscador */}
+      <div className="grid grid-3" style={{ marginBottom: 16 }}>
+        <input
+          className="input"
+          placeholder="Buscar marca…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="Buscar marca"
+        />
+        <div />
+        <div />
+      </div>
 
-        {loading ? (
-          <p className="loading">Cargando marcas...</p>
-        ) : brands.length === 0 ? (
-          <p className="empty">No hay marcas disponibles por ahora.</p>
-        ) : (
-          <div className="brands-grid">
-            {brands.map((brand) => (
-              <div key={brand.id} className="brand-card">
-                <img
-                  src={brand.logo_url || "/placeholder-brand.png"}
-                  alt={brand.name}
-                  className="brand-logo"
-                />
-                <h3 className="brand-name">{brand.name}</h3>
+      {/* Estados */}
+      {!filtered && <div className="skel" style={{ height: 120, borderRadius: 12 }} />}
+      {filtered && filtered.length === 0 && (
+        <div className="card" role="status">Aún no hay marcas activas.</div>
+      )}
+
+      {/* Grid de marcas */}
+      <div className="grid grid-3">
+        {filtered &&
+          filtered.map((b) => (
+            <Link href={`/marcas/${b.slug}`} key={b.id} className="card" aria-label={`Abrir ${b.name}`}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 12,
+                    background: "#0E1012",
+                    display: "grid",
+                    placeItems: "center",
+                    border: "1px solid rgba(255,255,255,.08)",
+                    overflow: "hidden",
+                  }}
+                >
+                  {b.logo_url ? (
+                    <Image src={b.logo_url} alt="" width={48} height={48} />
+                  ) : (
+                    <span className="badge">LOGO</span>
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{b.name}</div>
+                  <div style={{ color: "var(--text-dim)", fontSize: ".9rem" }}>
+                    {b.description || "—"}
+                  </div>
+                </div>
               </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* CTA */}
-      <section className="cta">
-        <h2>Sumate a Caburé</h2>
-        <p>Registrate como vendedor y empezá a mostrar tus productos.</p>
-        <Link href="/vendedores" className="btn-secondary">
-          Ser vendedor
-        </Link>
-      </section>
-
-      <style jsx>{`
-        /* Hero */
-        .hero {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 70vh;
-          background: url("/hero-bg.jpg") center/cover no-repeat;
-          text-align: center;
-          padding: 2rem;
-        }
-        .hero-content {
-          background: rgba(0, 0, 0, 0.5);
-          padding: 2rem;
-          border-radius: 12px;
-        }
-        .hero-title {
-          font-size: 3rem;
-          font-weight: bold;
-          color: #fff;
-        }
-        .hero-subtitle {
-          color: #eee;
-          margin-top: 0.5rem;
-          margin-bottom: 1rem;
-          font-size: 1.2rem;
-        }
-        .btn-primary {
-          background: #000;
-          color: #fff;
-          padding: 0.8rem 1.5rem;
-          border-radius: 8px;
-          font-weight: 500;
-          transition: 0.3s ease;
-        }
-        .btn-primary:hover {
-          background: #222;
-        }
-
-        /* Sección Marcas */
-        .brands {
-          padding: 3rem 2rem;
-          text-align: center;
-        }
-        .section-title {
-          font-size: 1.8rem;
-          margin-bottom: 1.5rem;
-        }
-        .brands-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-          gap: 1.5rem;
-        }
-        .brand-card {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          padding: 1rem;
-          background: #f8f8f8;
-          border-radius: 12px;
-          transition: transform 0.2s ease;
-        }
-        .brand-card:hover {
-          transform: translateY(-4px);
-        }
-        .brand-logo {
-          width: 80px;
-          height: 80px;
-          object-fit: contain;
-          border-radius: 8px;
-          margin-bottom: 0.5rem;
-        }
-        .brand-name {
-          font-size: 1rem;
-          font-weight: 600;
-        }
-
-        /* CTA */
-        .cta {
-          background: #000;
-          color: #fff;
-          padding: 2.5rem 2rem;
-          text-align: center;
-          margin-top: 3rem;
-        }
-        .btn-secondary {
-          display: inline-block;
-          margin-top: 1rem;
-          padding: 0.8rem 1.5rem;
-          background: #fff;
-          color: #000;
-          border-radius: 8px;
-          font-weight: 600;
-          transition: 0.3s ease;
-        }
-        .btn-secondary:hover {
-          background: #eee;
-        }
-      `}</style>
+            </Link>
+          ))}
+      </div>
     </>
   );
 }
