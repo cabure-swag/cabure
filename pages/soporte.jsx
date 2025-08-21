@@ -13,7 +13,7 @@ export default function Soporte() {
   const toast = useToast();
   const push = toast?.push ?? (() => {});
 
-  // Obtener sesión y escuchar cambios de auth
+  // Sesión + listener
   useEffect(() => {
     let isMounted = true;
 
@@ -31,14 +31,13 @@ export default function Soporte() {
     };
   }, []);
 
-  // Crear o reabrir hilo de soporte
+  // Crear o reabrir hilo
   useEffect(() => {
     if (!session) return;
 
     (async () => {
       const user_id = session.user.id;
 
-      // Buscar hilo abierto
       let { data: t, error: selErr } = await supabase
         .from("support_threads")
         .select("id")
@@ -51,7 +50,6 @@ export default function Soporte() {
         return;
       }
 
-      // Si no hay, crear uno
       if (!t) {
         const { data, error } = await supabase
           .from("support_threads")
@@ -70,8 +68,17 @@ export default function Soporte() {
     })();
   }, [session, push]);
 
+  // LOGIN — volver al MISMO dominio
   const login = async () => {
-    await supabase.auth.signInWithOAuth({ provider: "google" });
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/soporte`
+            : undefined,
+      },
+    });
   };
 
   const logout = async () => {
@@ -116,7 +123,7 @@ export default function Soporte() {
   );
 }
 
-// Forzamos SSR para evitar el prerender/export de esta página (previene errores en build)
+// Forzamos SSR para esta página (evita errores al export/prerender)
 export async function getServerSideProps() {
   return { props: {} };
 }
