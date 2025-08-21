@@ -6,7 +6,7 @@ import Image from "next/image";
 import "@/styles/globals.css";
 import { supabase } from "@/lib/supabaseClient";
 
-// Util: click afuera para cerrar menús
+// Hook: cerrar menú al click afuera
 function useClickAway(ref, onAway) {
   useEffect(() => {
     function handler(e) {
@@ -29,9 +29,18 @@ function Header({ isAdmin, session }) {
     session?.user?.email ||
     null;
 
+  // LOGIN — siempre volver al MISMO dominio (preview o prod)
   const signInWithGoogle = async () => {
     setOpen(false);
-    await supabase.auth.signInWithOAuth({ provider: "google" });
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/soporte`
+            : undefined,
+      },
+    });
   };
 
   const logout = async () => {
@@ -59,7 +68,7 @@ function Header({ isAdmin, session }) {
             </Link>
           )}
 
-          {/* Si NO hay sesión: botón "Iniciar sesión" con menú (por ahora solo Google) */}
+          {/* NO logueado → botón Iniciar sesión con menú (Google por ahora) */}
           {!session && (
             <div ref={menuRef} style={{ position: "relative" }}>
               <button
@@ -95,7 +104,6 @@ function Header({ isAdmin, session }) {
                     role="menuitem"
                     aria-label="Continuar con Google"
                   >
-                    {/* mini icono G */}
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                       <svg width="18" height="18" viewBox="0 0 533.5 544.3" aria-hidden="true">
                         <path fill="#4285F4" d="M533.5 278.4c0-18.5-1.7-36.3-4.9-53.6H272v101.4h147.1c-6.4 34.6-25.9 63.9-55.2 83.6v69.4h89.3c52.2-48.1 80.3-119 80.3-200.8z"/>
@@ -106,18 +114,12 @@ function Header({ isAdmin, session }) {
                       Continuar con Google
                     </span>
                   </button>
-
-                  {/* Ejemplo para futuros providers:
-                  <button className="btn" style={{ width:'100%', marginTop:8 }} onClick={signInWithGithub}>
-                    GitHub (próximamente)
-                  </button>
-                  */}
                 </div>
               )}
             </div>
           )}
 
-          {/* Si HAY sesión: nombre + menú simple (Salir) */}
+          {/* Logueado → nombre + menú (Soporte / Cerrar sesión) */}
           {session && (
             <div ref={menuRef} style={{ position: "relative" }}>
               <button
