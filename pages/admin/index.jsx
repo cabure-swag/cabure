@@ -1,149 +1,278 @@
+// pages/admin/index.jsx
+import React, { useEffect, useState } from "react";
 import Head from "next/head";
-import { useEffect, useState } from "react";
-import { withRoleGuard } from "@/utils/roleGuards";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import ConfirmModal from "@/components/ConfirmModal";
-import { useToast } from "@/components/Toast";
 
-function AdminPage(){
-  const { push } = useToast();
-  const [brands, setBrands] = useState([]);
-  const [form, setForm] = useState({ name:'', slug:'', description:'', color:'#ffffff', active:true, bank_alias:'', bank_cbu:'', mp_access_token:'' });
-  const [confirm, setConfirm] = useState({ open:false, brand:null });
-
-  const list = async () => {
-    const { data } = await supabase.from('brands').select('*').order('created_at', { ascending: false });
-    setBrands(data || []);
-  };
-  useEffect(() => { list(); }, []);
-
-  const createBrand = async (e) => {
-    e.preventDefault();
-    const payload = { ...form, mp_access_token: form.mp_access_token || null, logo_url: form.logo_url || null };
-    const { error } = await supabase.from('brands').insert(payload);
-    if (error) return push('Error al crear marca');
-    setForm({ name:'', slug:'', description:'', color:'#ffffff', active:true, bank_alias:'', bank_cbu:'', mp_access_token:'' });
-    push('Marca creada');
-    list();
-  };
-
-  const removeBrand = async (brand) => {
-    setConfirm({ open:false, brand:null });
-    const { error } = await supabase.from('brands').update({ deleted_at: new Date().toISOString(), active:false }).eq('id', brand.id);
-    if (error) return push('Error al eliminar');
-    push('Marca eliminada');
-    await supabase.from('audit_logs').insert({ action:'delete', entity:'brand', entity_id:brand.id });
-    list();
-  };
-
-  const uploadLogo = async (file) => {
-    if (!file) return;
-    const filename = `${crypto.randomUUID()}-${file.name}`;
-    const { error } = await supabase.storage.from('brand-logos').upload(filename, file, { upsert:false });
-    if (error) return push('No se pudo subir el logo');
-    const { data } = await supabase.storage.from('brand-logos').getPublicUrl(filename);
-    setForm(f => ({ ...f, logo_url: data.publicUrl }));
-    push('Logo subido');
-  };
-
-  const assignVendor = async (brandId) => {
-    const email = prompt('Email del vendedor (debe haber ingresado al menos una vez)');
-    if (!email) return;
-    const { data: p } = await supabase.from('profiles').select('user_id, email').eq('email', email).maybeSingle();
-    if (!p) return push('No existe ese usuario');
-    const { error } = await supabase.from('brand_users').insert({ brand_id: brandId, user_id: p.user_id });
-    if (error) return push('No se pudo asignar');
-    push('Vendedor asignado');
-  };
-
-  return (
-    <div className="container">
-      <Head><title>Admin — CABURE.STORE</title></Head>
-      <div className="row" style={{justifyContent:'space-between'}}>
-        <h1>Admin</h1>
-        <div className="row">
-          <a className="btn" href="/admin/support">Soporte</a>
-          <a className="btn" href="/admin/metrics">Métricas</a>
-        </div>
-      </div>
-
-      <form onSubmit={createBrand} className="card" style={{padding:14, marginTop:12}}>
-        <h3 style={{marginTop:0}}>Crear marca</h3>
-        <div className="row">
-          <div style={{flex:1}}>
-            <label className="label" htmlFor="name">Nombre</label>
-            <input id="name" className="input" required value={form.name} onChange={e=>setForm({...form, name:e.target.value})} />
-          </div>
-          <div style={{flex:1}}>
-            <label className="label" htmlFor="slug">Slug</label>
-            <input id="slug" className="input" required value={form.slug} onChange={e=>setForm({...form, slug:e.target.value})} />
-          </div>
-        </div>
-        <label className="label" htmlFor="description">Descripción</label>
-        <textarea id="description" className="input" value={form.description} onChange={e=>setForm({...form, description:e.target.value})} />
-        <div className="row">
-          <div>
-            <label className="label" htmlFor="color">Color</label>
-            <input id="color" type="color" aria-label="Color de marca" className="input" style={{padding:4, height:40, width:80}} value={form.color} onChange={e=>setForm({...form, color:e.target.value})} />
-          </div>
-          <div>
-            <label className="label" htmlFor="active">Activa</label>
-            <select id="active" className="input" value={form.active} onChange={e=>setForm({...form, active: e.target.value==='true'})}>
-              <option value="true">Sí</option>
-              <option value="false">No</option>
-            </select>
-          </div>
-        </div>
-        <div className="row">
-          <div style={{flex:1}}>
-            <label className="label" htmlFor="bank_alias">Alias</label>
-            <input id="bank_alias" className="input" value={form.bank_alias} onChange={e=>setForm({...form, bank_alias:e.target.value})} />
-          </div>
-          <div style={{flex:1}}>
-            <label className="label" htmlFor="bank_cbu">CBU</label>
-            <input id="bank_cbu" className="input" value={form.bank_cbu} onChange={e=>setForm({...form, bank_cbu:e.target.value})} />
-          </div>
-        </div>
-        <label className="label" htmlFor="mp_access_token">Mercado Pago Access Token (opcional)</label>
-        <input id="mp_access_token" className="input" value={form.mp_access_token} onChange={e=>setForm({...form, mp_access_token:e.target.value})} />
-        <div className="row" style={{marginTop:8}}>
-          <div>
-            <label className="label" htmlFor="logo">Logo</label>
-            <input id="logo" type="file" onChange={e=>uploadLogo(e.target.files[0])} aria-label="Subir logo" />
-          </div>
-          <div style={{flex:1}} />
-          <button className="btn btn-primary" type="submit">Crear</button>
-        </div>
-      </form>
-
-      <h3 style={{marginTop:20}}>Marcas</h3>
-      <div className="grid">
-        {brands.map(b => (
-          <div key={b.id} className="card">
-            <div className="card-body">
-              <div className="row" style={{justifyContent:'space-between'}}>
-                <div className="card-title">{b.name}</div>
-                <a className="btn" href={`/marcas/${b.slug}`}>Ver</a>
-              </div>
-              <div style={{color:'var(--muted)'}}>{b.description}</div>
-              <div className="row" style={{marginTop:8}}>
-                <button className="btn" onClick={()=>assignVendor(b.id)}>Asignar vendedor</button>
-                <button className="btn btn-danger" onClick={()=>setConfirm({ open:true, brand:b })}>Eliminar</button>
-              </div>
+// ============= Error Boundary (evita pantallas negras) =============
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || "Error desconocido" };
+  }
+  componentDidCatch(error, info) {
+    // Podés loguear a Supabase audit_logs si querés
+    // console.error("Admin crash:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="container">
+          <div className="card" style={{ padding: 24 }}>
+            <h2 style={{ marginTop: 0 }}>Ocurrió un error en Admin</h2>
+            <p style={{ color: "var(--text-dim)" }}>{this.state.message}</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Link href="/" className="btn secondary">Volver al inicio</Link>
+              <button className="btn ghost" onClick={() => location.reload()}>
+                Reintentar
+              </button>
             </div>
           </div>
-        ))}
-      </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
-      <ConfirmModal
-        open={confirm.open}
-        title="Eliminar marca"
-        description="Esto hará un soft delete (se puede recuperar por DB)."
-        onCancel={()=>setConfirm({ open:false, brand:null })}
-        onConfirm={()=>removeBrand(confirm.brand)}
-      />
-    </div>
+// ============= Admin Page =============
+export default function AdminPage() {
+  const [session, setSession] = useState(null);
+  const [role, setRole] = useState(null); // 'admin' | 'vendor' | null
+  const [loading, setLoading] = useState(true);
+
+  // Datos demo seguros para que no rompa si falla la DB
+  const [brands, setBrands] = useState([]);
+  const [loadingBrands, setLoadingBrands] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function bootstrap() {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const s = data?.session ?? null;
+        if (!alive) return;
+        setSession(s);
+
+        if (s?.user?.id) {
+          const { data: prof, error } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("user_id", s.user.id)
+            .maybeSingle();
+          if (error) {
+            // Si falla profiles, asumimos no admin para no romper
+            setRole(null);
+          } else {
+            setRole(prof?.role ?? null);
+          }
+        } else {
+          setRole(null);
+        }
+      } catch (_e) {
+        setRole(null);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    bootstrap();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      if (!alive) return;
+      setSession(s);
+      (async () => {
+        if (s?.user?.id) {
+          const { data: prof } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("user_id", s.user.id)
+            .maybeSingle();
+          setRole(prof?.role ?? null);
+        } else {
+          setRole(null);
+        }
+      })();
+    });
+
+    return () => {
+      alive = false;
+      sub?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  // Traer marcas (solo si sos admin)
+  useEffect(() => {
+    if (!session || role !== "admin") return;
+    let alive = true;
+    setLoadingBrands(true);
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("brands")
+          .select("id,name,slug,description,logo_url,active,deleted_at,instagram_url")
+          .order("created_at", { ascending: false });
+        if (error) throw error;
+        if (alive) setBrands(data ?? []);
+      } catch (_e) {
+        if (alive) setBrands([]);
+      } finally {
+        if (alive) setLoadingBrands(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [session, role]);
+
+  // Acciones
+  const logout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  // UI States
+  if (loading) {
+    return (
+      <div className="container">
+        <div className="skel" style={{ height: 80, borderRadius: 12, marginTop: 16 }} />
+        <div className="skel" style={{ height: 200, borderRadius: 12, marginTop: 16 }} />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="container">
+        <div className="card" style={{ padding: 24 }}>
+          <h2 style={{ marginTop: 0 }}>Admin</h2>
+          <p>Necesitás iniciar sesión para entrar al panel.</p>
+          <Link href="/soporte" className="btn">Iniciar sesión</Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (role !== "admin") {
+    return (
+      <div className="container">
+        <div className="card" style={{ padding: 24 }}>
+          <h2 style={{ marginTop: 0 }}>Sin permiso</h2>
+          <p>Tu usuario no tiene rol de administrador.</p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Link href="/" className="btn secondary">Volver</Link>
+            <button className="btn ghost" onClick={logout}>Cerrar sesión</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Panel admin mínimo y seguro
+  return (
+    <ErrorBoundary>
+      <div className="container">
+        <Head>
+          <title>Admin — CABURE.STORE</title>
+          <meta name="robots" content="noindex" />
+        </Head>
+
+        <div
+          className="row"
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}
+        >
+          <h1 style={{ margin: 0 }}>Panel de Admin</h1>
+          <button className="btn ghost" onClick={logout}>Cerrar sesión</button>
+        </div>
+
+        {/* Bloque: Marcas */}
+        <section className="card" style={{ padding: 16, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <h2 style={{ margin: 0 }}>Marcas</h2>
+            <Link href="/admin/support" className="btn secondary">Ver Soporte</Link>
+          </div>
+
+          {loadingBrands ? (
+            <div className="skel" style={{ height: 120, borderRadius: 12, marginTop: 12 }} />
+          ) : brands.length === 0 ? (
+            <div className="card" style={{ padding: 16, marginTop: 12 }}>
+              Aún no hay marcas creadas.
+            </div>
+          ) : (
+            <div className="grid grid-3" style={{ marginTop: 12 }}>
+              {brands.map((b) => (
+                <article key={b.id} className="card" style={{ padding: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div
+                      style={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: 10,
+                        background: "#0E1012",
+                        border: "1px solid rgba(255,255,255,.08)",
+                      }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <strong>{b.name}</strong>
+                        {!b.active && (
+                          <span className="badge" aria-label="inactiva">inactiva</span>
+                        )}
+                      </div>
+                      <div style={{ color: "var(--text-dim)", fontSize: ".9rem" }}>
+                        /marcas/{b.slug}
+                      </div>
+                    </div>
+                  </div>
+                  <p
+                    style={{
+                      marginTop: 8,
+                      color: "var(--text-dim)",
+                      fontSize: ".95rem",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {b.description || "—"}
+                  </p>
+
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <Link className="btn ghost" href={`/marcas/${b.slug}`} target="_blank">
+                      Ver pública
+                    </Link>
+                    {/* Botones futuro: Editar/Eliminar (soft delete) */}
+                    {/* <button className="btn secondary">Editar</button>
+                    <button className="btn danger">Eliminar</button> */}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Tips/links rápidos */}
+        <section className="card" style={{ padding: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Atajos</h3>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li>
+              <Link href="/admin/metrics">Métricas</Link>
+            </li>
+            <li>
+              <Link href="/vendor">Vendor</Link>
+            </li>
+          </ul>
+        </section>
+      </div>
+    </ErrorBoundary>
   );
 }
 
-export default withRoleGuard(AdminPage, { requireAdmin:true });
+// Evitamos cualquier prerender no deseado que pueda romper con objetos del browser
+export async function getServerSideProps() {
+  return { props: {} };
+}
