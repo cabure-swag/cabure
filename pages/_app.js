@@ -1,11 +1,96 @@
 // pages/_app.js
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, createContext, useContext } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import Image from "next/image";
 import "@/styles/globals.css";
 import { supabase } from "@/lib/supabaseClient";
 
+/* ====================== CART CONTEXT (carrito por marca) ====================== */
+// Estructura: { brandId, brandSlug, items: [{id,name,price,image_url,qty}], totals: {qty, amount} }
+const CartCtx = createContext(null);
+export function useCart() {
+  return useContext(CartCtx);
+}
+function CartProvider({ children }) {
+  const [cart, setCart] = useState(null); // null: indeterminado (cargando localStorage)
+
+  // cargar de localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("cabure_cart_v1");
+      if (raw) setCart(JSON.parse(raw));
+      else setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
+    } catch {
+      setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
+    }
+  }, []);
+
+  // persistir
+  useEffect(() => {
+    if (!cart) return;
+    localStorage.setItem("cabure_cart_v1", JSON.stringify(cart));
+  }, [cart]);
+
+  function recalc(items) {
+    const qty = items.reduce((s, it) => s + it.qty, 0);
+    const amount = items.reduce((s, it) => s + (Number(it.price) || 0) * it.qty, 0);
+    return { qty, amount };
+  }
+
+  function clearCart() {
+    setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
+  }
+
+  function addItem(product, brand) {
+    setCart((prev) => {
+      const base =
+        prev && prev.brandId && prev.brandId !== brand.id
+          ? { brandId: brand.id, brandSlug: brand.slug, items: [], totals: { qty: 0, amount: 0 } }
+          : prev || { brandId: brand.id, brandSlug: brand.slug, items: [], totals: { qty: 0, amount: 0 } };
+
+      const items = [...base.items];
+      const idx = items.findIndex((i) => i.id === product.id);
+      if (idx >= 0) items[idx] = { ...items[idx], qty: items[idx].qty + 1 };
+      else
+        items.push({
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          image_url: product.image_url || null,
+          qty: 1,
+        });
+
+      return { brandId: brand.id, brandSlug: brand.slug, items, totals: recalc(items) };
+    });
+  }
+
+  function setQty(productId, qty) {
+    setCart((prev) => {
+      if (!prev) return prev;
+      let items = prev.items.map((i) => (i.id === productId ? { ...i, qty: Math.max(1, qty) } : i));
+      return { ...prev, items, totals: recalc(items) };
+    });
+  }
+
+  function removeItem(productId) {
+    setCart((prev) => {
+      if (!prev) return prev;
+      let items = prev.items.filter((i) => i.id !== productId);
+      const next = { ...prev, items, totals: recalc(items) };
+      if (items.length === 0) {
+        next.brandId = null;
+        next.brandSlug = null;
+      }
+      return next;
+    });
+  }
+
+  const value = { cart, addItem, setQty, removeItem, clearCart };
+  return <CartCtx.Provider value={value}>{children}</CartCtx.Provider>;
+}
+
+/* ====================== Util: click afuera ====================== */
 function useClickAway(ref, onAway) {
   useEffect(() => {
     function handler(e) {
@@ -17,7 +102,8 @@ function useClickAway(ref, onAway) {
   }, [ref, onAway]);
 }
 
-function Header({ role, session }) {
+/* ====================== Header ====================== */
+function Header({ role, session, cart }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
   useClickAway(menuRef, () => setOpen(false));
@@ -27,6 +113,9 @@ function Header({ role, session }) {
     session?.user?.user_metadata?.name ||
     session?.user?.email ||
     null;
+
+  const isAdmin = role === "admin";
+  const isVendor = role === "vendor";
 
   const signInWithGoogle = async () => {
     setOpen(false);
@@ -46,8 +135,7 @@ function Header({ role, session }) {
     await supabase.auth.signOut();
   };
 
-  const isAdmin = role === "admin";
-  const isVendor = role === "vendor";
+  const cartHref = cart?.brandSlug ? `/checkout/${cart.brandSlug}` : "#";
 
   return (
     <header className="header" role="banner">
@@ -62,6 +150,16 @@ function Header({ role, session }) {
 
         {/* DERECHA */}
         <nav aria-label="Accesos" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Carrito */}
+          <Link
+            href={cartHref}
+            aria-disabled={!cart?.brandSlug}
+            className="btn secondary"
+            style={{ opacity: cart?.totals?.qty > 0 ? 1 : 0.6, pointerEvents: cart?.brandSlug ? "auto" : "none" }}
+          >
+            Carrito{cart?.totals?.qty ? ` (${cart.totals.qty})` : ""}
+          </Link>
+
           {(isVendor || isAdmin) && (
             <Link className="btn secondary" href="/vendor" aria-label="Vendor">
               Vendor
@@ -108,7 +206,7 @@ function Header({ role, session }) {
                     aria-label="Continuar con Google"
                   >
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      {/* ícono Google */}
+                      {/* Google */}
                       <svg width="18" height="18" viewBox="0 0 533.5 544.3" aria-hidden="true">
                         <path fill="#4285F4" d="M533.5 278.4c0-18.5-1.7-36.3-4.9-53.6H272v101.4h147.1c-6.4 34.6-25.9 63.9-55.2 83.6v69.4h89.3c52.2-48.1 80.3-119 80.3-200.8z"/>
                         <path fill="#34A853" d="M272 544.3c73 0 134.3-24.2 179.1-65.5l-89.3-69.4c-24.8 16.7-56.5 26.6-89.8 26.6-69 0-127.5-46.6-148.5-109.2H31v68.5C75.9 495.3 168.8 544.3 272 544.3z"/>
@@ -170,71 +268,93 @@ function Header({ role, session }) {
   );
 }
 
+/* ====================== App ====================== */
 export default function MyApp({ Component, pageProps }) {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null); // 'admin' | 'vendor' | null
 
-  useEffect(() => {
-    let mounted = true;
-    async function load() {
-      const { data: sess } = await supabase.auth.getSession();
-      const s = sess?.session ?? null;
-      if (mounted) setSession(s);
+  const { cart } = useCart() || { cart: null }; // placeholder hasta montar provider (se re-renderiza luego)
 
-      if (s?.user?.id) {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", s.user.id)
-          .maybeSingle();
-        if (mounted) setRole(prof?.role ?? null);
-      } else {
-        if (mounted) setRole(null);
-      }
-    }
-    load();
+  // Montamos realmente el Provider alrededor del árbol.
+  return (
+    <CartProviderWrapper>
+      <AppContent />
+    </CartProviderWrapper>
+  );
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-      if (!mounted) return;
-      setSession(s);
-      (async () => {
+  function CartProviderWrapper({ children }) {
+    return (
+      <CartProvider>
+        <StatefulApp />
+      </CartProvider>
+    );
+  }
+
+  function StatefulApp() {
+    const cartState = useCart();
+
+    useEffect(() => {
+      let mounted = true;
+      async function load() {
+        const { data: sess } = await supabase.auth.getSession();
+        const s = sess?.session ?? null;
+        if (mounted) setSession(s);
+
         if (s?.user?.id) {
           const { data: prof } = await supabase
             .from("profiles")
             .select("role")
             .eq("user_id", s.user.id)
             .maybeSingle();
-          setRole(prof?.role ?? null);
+          if (mounted) setRole(prof?.role ?? null);
         } else {
-          setRole(null);
+          if (mounted) setRole(null);
         }
-      })();
-    });
+      }
+      load();
 
-    return () => {
-      mounted = false;
-      sub?.subscription?.unsubscribe?.();
-    };
-  }, []);
+      const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+        if (!mounted) return;
+        setSession(s);
+        (async () => {
+          if (s?.user?.id) {
+            const { data: prof } = await supabase
+              .from("profiles")
+              .select("role")
+              .eq("user_id", s.user.id)
+              .maybeSingle();
+            setRole(prof?.role ?? null);
+          } else {
+            setRole(null);
+          }
+        })();
+      });
 
-  return (
-    <>
-      <Head>
-        <title>CABURE.STORE</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="color-scheme" content="dark" />
-        <meta name="theme-color" content="#0e0e0e" />
-        <link rel="icon" href="/favicon.ico" />
-        <link rel="manifest" href="/site.webmanifest" />
-        {process.env.NEXT_PUBLIC_SITE_URL && (
-          <link rel="canonical" href={process.env.NEXT_PUBLIC_SITE_URL} />
-        )}
-      </Head>
+      return () => {
+        mounted = false;
+        sub?.subscription?.unsubscribe?.();
+      };
+    }, []);
 
-      <Header role={role} session={session} />
-      <main className="container">
-        <Component {...pageProps} />
-      </main>
-    </>
-  );
+    return (
+      <>
+        <Head>
+          <title>CABURE.STORE</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <meta name="color-scheme" content="dark" />
+          <meta name="theme-color" content="#0e0e0e" />
+          <link rel="icon" href="/favicon.ico" />
+          <link rel="manifest" href="/site.webmanifest" />
+          {process.env.NEXT_PUBLIC_SITE_URL && (
+            <link rel="canonical" href={process.env.NEXT_PUBLIC_SITE_URL} />
+          )}
+        </Head>
+
+        <Header role={role} session={session} cart={cartState?.cart} />
+        <main className="container">
+          <Component {...pageProps} />
+        </main>
+      </>
+    );
+  }
 }
