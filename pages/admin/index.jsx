@@ -2,9 +2,9 @@
 import React, { useEffect, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
+import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
 
-// ============= Error Boundary (evita pantallas negras) =============
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -12,10 +12,6 @@ class ErrorBoundary extends React.Component {
   }
   static getDerivedStateFromError(error) {
     return { hasError: true, message: error?.message || "Error desconocido" };
-  }
-  componentDidCatch(error, info) {
-    // Podés loguear a Supabase audit_logs si querés
-    // console.error("Admin crash:", error, info);
   }
   render() {
     if (this.state.hasError) {
@@ -26,9 +22,7 @@ class ErrorBoundary extends React.Component {
             <p style={{ color: "var(--text-dim)" }}>{this.state.message}</p>
             <div style={{ display: "flex", gap: 8 }}>
               <Link href="/" className="btn secondary">Volver al inicio</Link>
-              <button className="btn ghost" onClick={() => location.reload()}>
-                Reintentar
-              </button>
+              <button className="btn ghost" onClick={() => location.reload()}>Reintentar</button>
             </div>
           </div>
         </div>
@@ -38,19 +32,16 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-// ============= Admin Page =============
 export default function AdminPage() {
   const [session, setSession] = useState(null);
-  const [role, setRole] = useState(null); // 'admin' | 'vendor' | null
+  const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Datos demo seguros para que no rompa si falla la DB
   const [brands, setBrands] = useState([]);
   const [loadingBrands, setLoadingBrands] = useState(false);
 
   useEffect(() => {
     let alive = true;
-
     async function bootstrap() {
       try {
         const { data } = await supabase.auth.getSession();
@@ -59,30 +50,22 @@ export default function AdminPage() {
         setSession(s);
 
         if (s?.user?.id) {
-          const { data: prof, error } = await supabase
+          const { data: prof } = await supabase
             .from("profiles")
             .select("role")
             .eq("user_id", s.user.id)
             .maybeSingle();
-          if (error) {
-            // Si falla profiles, asumimos no admin para no romper
-            setRole(null);
-          } else {
-            setRole(prof?.role ?? null);
-          }
+          setRole(prof?.role ?? null);
         } else {
           setRole(null);
         }
-      } catch (_e) {
-        setRole(null);
       } finally {
         if (alive) setLoading(false);
       }
     }
-
     bootstrap();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       if (!alive) return;
       setSession(s);
       (async () => {
@@ -105,7 +88,6 @@ export default function AdminPage() {
     };
   }, []);
 
-  // Traer marcas (solo si sos admin)
   useEffect(() => {
     if (!session || role !== "admin") return;
     let alive = true;
@@ -114,7 +96,7 @@ export default function AdminPage() {
       try {
         const { data, error } = await supabase
           .from("brands")
-          .select("id,name,slug,description,logo_url,active,deleted_at,instagram_url")
+          .select("id,name,slug,description,logo_url,instagram_url,active,deleted_at,created_at")
           .order("created_at", { ascending: false });
         if (error) throw error;
         if (alive) setBrands(data ?? []);
@@ -129,12 +111,10 @@ export default function AdminPage() {
     };
   }, [session, role]);
 
-  // Acciones
   const logout = async () => {
     await supabase.auth.signOut();
   };
 
-  // UI States
   if (loading) {
     return (
       <div className="container">
@@ -171,7 +151,6 @@ export default function AdminPage() {
     );
   }
 
-  // Panel admin mínimo y seguro
   return (
     <ErrorBoundary>
       <div className="container">
@@ -188,7 +167,6 @@ export default function AdminPage() {
           <button className="btn ghost" onClick={logout}>Cerrar sesión</button>
         </div>
 
-        {/* Bloque: Marcas */}
         <section className="card" style={{ padding: 16, marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <h2 style={{ margin: 0 }}>Marcas</h2>
@@ -199,7 +177,7 @@ export default function AdminPage() {
             <div className="skel" style={{ height: 120, borderRadius: 12, marginTop: 12 }} />
           ) : brands.length === 0 ? (
             <div className="card" style={{ padding: 16, marginTop: 12 }}>
-              Aún no hay marcas creadas.
+              No hay marcas para mostrar.
             </div>
           ) : (
             <div className="grid grid-3" style={{ marginTop: 12 }}>
@@ -213,20 +191,31 @@ export default function AdminPage() {
                         borderRadius: 10,
                         background: "#0E1012",
                         border: "1px solid rgba(255,255,255,.08)",
+                        overflow: "hidden",
+                        position: "relative",
                       }}
-                    />
+                    >
+                      {b.logo_url ? (
+                        <Image
+                          src={b.logo_url}
+                          alt={`${b.name} logo`}
+                          fill
+                          sizes="48px"
+                          style={{ objectFit: "cover" }}
+                        />
+                      ) : null}
+                    </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <strong>{b.name}</strong>
-                        {!b.active && (
-                          <span className="badge" aria-label="inactiva">inactiva</span>
-                        )}
+                        {!b.active && <span className="badge">inactiva</span>}
                       </div>
                       <div style={{ color: "var(--text-dim)", fontSize: ".9rem" }}>
                         /marcas/{b.slug}
                       </div>
                     </div>
                   </div>
+
                   <p
                     style={{
                       marginTop: 8,
@@ -245,34 +234,22 @@ export default function AdminPage() {
                     <Link className="btn ghost" href={`/marcas/${b.slug}`} target="_blank">
                       Ver pública
                     </Link>
-                    {/* Botones futuro: Editar/Eliminar (soft delete) */}
-                    {/* <button className="btn secondary">Editar</button>
-                    <button className="btn danger">Eliminar</button> */}
+                    {b.instagram_url ? (
+                      <a href={b.instagram_url} target="_blank" rel="noreferrer" className="btn ghost">
+                        Instagram
+                      </a>
+                    ) : null}
                   </div>
                 </article>
               ))}
             </div>
           )}
         </section>
-
-        {/* Tips/links rápidos */}
-        <section className="card" style={{ padding: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Atajos</h3>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            <li>
-              <Link href="/admin/metrics">Métricas</Link>
-            </li>
-            <li>
-              <Link href="/vendor">Vendor</Link>
-            </li>
-          </ul>
-        </section>
       </div>
     </ErrorBoundary>
   );
 }
 
-// Evitamos cualquier prerender no deseado que pueda romper con objetos del browser
 export async function getServerSideProps() {
   return { props: {} };
 }
