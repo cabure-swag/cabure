@@ -5,26 +5,28 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
+import { useCart } from "../_app"; // usamos el CartContext exportado en _app
 
 const CATS = ["Todas", "Remera", "Pantalon", "Buzo", "Campera", "Gorra", "Otros"];
 
 export default function BrandCatalog() {
   const router = useRouter();
   const { slug } = router.query;
+  const { cart, addItem } = useCart() || {};
 
   const [brand, setBrand] = useState(null); // null: loading; {}: ok; false: no encontrada
   const [products, setProducts] = useState(null);
   const [cat, setCat] = useState("Todas");
   const [q, setQ] = useState("");
 
-  // Cargar marca
+  // Cargar marca pública
   useEffect(() => {
     if (!slug) return;
     let alive = true;
     (async () => {
       const { data, error } = await supabase
         .from("brands")
-        .select("id,name,slug,description,logo_url,color,instagram_url,active,deleted_at")
+        .select("id,name,slug,description,logo_url,color,instagram_url,active,deleted_at,bank_alias,bank_cbu,mp_access_token")
         .eq("slug", slug)
         .maybeSingle();
 
@@ -47,7 +49,7 @@ export default function BrandCatalog() {
     (async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("id,name,price,image_url,category,subcategory,active,deleted_at")
+        .select("id,name,price,image_url,category,subcategory,active,deleted_at,created_at")
         .eq("brand_id", brand.id)
         .order("created_at", { ascending: false });
 
@@ -75,6 +77,8 @@ export default function BrandCatalog() {
     }
     return list;
   }, [products, cat, q]);
+
+  const goCheckoutHref = brand?.slug ? `/checkout/${brand.slug}` : "#";
 
   return (
     <div className="container">
@@ -135,6 +139,9 @@ export default function BrandCatalog() {
                   Instagram
                 </a>
               ) : null}
+              <Link href={goCheckoutHref} className="btn secondary">
+                Ir al checkout
+              </Link>
             </div>
 
             {/* Filtros */}
@@ -198,19 +205,19 @@ export default function BrandCatalog() {
                     <div style={{ marginTop: 6 }}>
                       {typeof p.price === "number" ? `$ ${p.price.toLocaleString("es-AR")}` : "Consultar"}
                     </div>
+                    <button
+                      className="btn"
+                      style={{ marginTop: 8, width: "100%" }}
+                      onClick={() => addItem?.(p, { id: brand.id, slug: brand.slug })}
+                      aria-label={`Agregar ${p.name} al carrito`}
+                    >
+                      Agregar al carrito
+                    </button>
                   </div>
                 </article>
               ))}
             </div>
           )}
-
-          {/* Accesos */}
-          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-            <Link href="/checkout/[brandSlug]" as={`/checkout/${brand.slug}`} className="btn">
-              Comprar
-            </Link>
-            <Link href="/" className="btn ghost">Volver</Link>
-          </div>
         </>
       )}
     </div>
