@@ -13,12 +13,11 @@ export function useCart() {
   return useContext(CartCtx);
 }
 function CartProvider({ children }) {
-  const [cart, setCart] = useState(null); // null: indeterminado (cargando localStorage)
+  const [cart, setCart] = useState(null);
 
-  // cargar de localStorage
   useEffect(() => {
     try {
-      const raw = localStorage.getItem("cabure_cart_v1");
+      const raw = typeof window !== "undefined" ? localStorage.getItem("cabure_cart_v1") : null;
       if (raw) setCart(JSON.parse(raw));
       else setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
     } catch {
@@ -26,9 +25,8 @@ function CartProvider({ children }) {
     }
   }, []);
 
-  // persistir
   useEffect(() => {
-    if (!cart) return;
+    if (!cart || typeof window === "undefined") return;
     localStorage.setItem("cabure_cart_v1", JSON.stringify(cart));
   }, [cart]);
 
@@ -273,88 +271,71 @@ export default function MyApp({ Component, pageProps }) {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null); // 'admin' | 'vendor' | null
 
-  const { cart } = useCart() || { cart: null }; // placeholder hasta montar provider (se re-renderiza luego)
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      const { data: sess } = await supabase.auth.getSession();
+      const s = sess?.session ?? null;
+      if (mounted) setSession(s);
 
-  // Montamos realmente el Provider alrededor del árbol.
-  return (
-    <CartProviderWrapper>
-      <AppContent />
-    </CartProviderWrapper>
-  );
+      if (s?.user?.id) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("user_id", s.user.id)
+          .maybeSingle();
+        if (mounted) setRole(prof?.role ?? null);
+      } else {
+        if (mounted) setRole(null);
+      }
+    }
+    load();
 
-  function CartProviderWrapper({ children }) {
-    return (
-      <CartProvider>
-        <StatefulApp />
-      </CartProvider>
-    );
-  }
-
-  function StatefulApp() {
-    const cartState = useCart();
-
-    useEffect(() => {
-      let mounted = true;
-      async function load() {
-        const { data: sess } = await supabase.auth.getSession();
-        const s = sess?.session ?? null;
-        if (mounted) setSession(s);
-
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      if (!mounted) return;
+      setSession(s);
+      (async () => {
         if (s?.user?.id) {
           const { data: prof } = await supabase
             .from("profiles")
             .select("role")
             .eq("user_id", s.user.id)
             .maybeSingle();
-          if (mounted) setRole(prof?.role ?? null);
+          setRole(prof?.role ?? null);
         } else {
-          if (mounted) setRole(null);
+          setRole(null);
         }
-      }
-      load();
+      })();
+    });
 
-      const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-        if (!mounted) return;
-        setSession(s);
-        (async () => {
-          if (s?.user?.id) {
-            const { data: prof } = await supabase
-              .from("profiles")
-              .select("role")
-              .eq("user_id", s.user.id)
-              .maybeSingle();
-            setRole(prof?.role ?? null);
-          } else {
-            setRole(null);
-          }
-        })();
-      });
+    return () => {
+      mounted = false;
+      sub?.subscription?.unsubscribe?.();
+    };
+  }, []);
 
-      return () => {
-        mounted = false;
-        sub?.subscription?.unsubscribe?.();
-      };
-    }, []);
+  return (
+    <CartProvider>
+      <Head>
+        <title>CABURE.STORE</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="dark" />
+        <meta name="theme-color" content="#0e0e0e" />
+        <link rel="icon" href="/favicon.ico" />
+        <link rel="manifest" href="/site.webmanifest" />
+        {process.env.NEXT_PUBLIC_SITE_URL && (
+          <link rel="canonical" href={process.env.NEXT_PUBLIC_SITE_URL} />
+        )}
+      </Head>
 
-    return (
-      <>
-        <Head>
-          <title>CABURE.STORE</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <meta name="color-scheme" content="dark" />
-          <meta name="theme-color" content="#0e0e0e" />
-          <link rel="icon" href="/favicon.ico" />
-          <link rel="manifest" href="/site.webmanifest" />
-          {process.env.NEXT_PUBLIC_SITE_URL && (
-            <link rel="canonical" href={process.env.NEXT_PUBLIC_SITE_URL} />
-          )}
-        </Head>
+      {/* Header arriba de todo */}
+      <CartCtx.Consumer>
+        {(cartState) => <Header role={role} session={session} cart={cartState?.cart} />}
+      </CartCtx.Consumer>
 
-        <Header role={role} session={session} cart={cartState?.cart} />
-        <main className="container">
-          <Component {...pageProps} />
-        </main>
-      </>
-    );
-  }
+      <main className="container">
+        <Component {...pageProps} />
+      </main>
+    </CartProvider>
+  );
 }
