@@ -53,6 +53,7 @@ export default function CheckoutBrand() {
   const cart = useBrandCart(brandSlug);
 
   const [brand, setBrand] = useState(null);
+  const [session, setSession] = useState(null);
   const [step, setStep] = useState(1);
   const [payment, setPayment] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -65,6 +66,20 @@ export default function CheckoutBrand() {
     entre_calles: "", observaciones: "",
   });
 
+  // Sesión (login requerido)
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (mounted) setSession(data?.session ?? null);
+    })();
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+    });
+    return () => sub?.subscription?.unsubscribe?.();
+  }, []);
+
+  // Cargar marca pública
   useEffect(() => {
     if (!brandSlug) return;
     let alive = true;
@@ -95,12 +110,17 @@ export default function CheckoutBrand() {
   }
 
   async function createOrder(status, payment_method, mp_preference_id = null, mp_payment_id = null) {
+    // buyer_id DEBE ser el usuario logueado (RLS)
+    const { data: userData } = await supabase.auth.getUser();
+    const userId = userData?.user?.id || null;
+    if (!userId) throw new Error("Tenés que iniciar sesión para crear el pedido.");
+
     const total = cart?.totals?.amount || 0;
     const { data: order, error } = await supabase
       .from("orders")
       .insert({
         brand_id: brand.id,
-        buyer_id: (await supabase.auth.getUser()).data?.user?.id ?? null,
+        buyer_id: userId,
         total,
         status,
         payment_method,
@@ -127,6 +147,10 @@ export default function CheckoutBrand() {
   async function onConfirm() {
     try {
       setUiError("");
+      if (!session?.user?.id) {
+        setUiError("Iniciá sesión para continuar.");
+        return;
+      }
       if (!cart.items.length) { setUiError("El carrito está vacío."); return; }
       if (!payment) { setUiError("Elegí un método de pago."); return; }
       if (!validateShip()) { setUiError("Completá los datos de envío obligatorios."); return; }
@@ -153,8 +177,11 @@ export default function CheckoutBrand() {
             },
           }),
         });
-        const data = await res.json();
-        if (!res.ok || !data?.init_point) throw new Error(data?.error || "No se pudo crear la preferencia.");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.init_point) {
+          console.error("MP create-preference error:", data);
+          throw new Error(data?.error || "No se pudo crear la preferencia de pago.");
+        }
         window.location.href = data.init_point;
         return;
       }
@@ -166,11 +193,21 @@ export default function CheckoutBrand() {
         return;
       }
     } catch (e) {
+      console.error("Checkout error:", e);
       setUiError(e.message || "No se pudo completar la compra.");
     } finally {
       setLoading(false);
     }
   }
+
+  const signInGoogle = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: typeof window !== "undefined" ? window.location.href : undefined,
+      },
+    });
+  };
 
   if (brand === false) {
     return (
@@ -188,6 +225,15 @@ export default function CheckoutBrand() {
       </Head>
 
       <h1>Checkout</h1>
+
+      {!session?.user?.id ? (
+        <section className="card" style={{ padding: 16, marginBottom: 16 }}>
+          <p>Para continuar con la compra, iniciá sesión.</p>
+          <button className="btn" onClick={signInGoogle} aria-label="Continuar con Google">
+            Iniciar sesión con Google
+          </button>
+        </section>
+      ) : null}
 
       {/* Carrito */}
       <section className="card" style={{ padding: 16, marginBottom: 16 }}>
@@ -223,7 +269,7 @@ export default function CheckoutBrand() {
         </div>
       ) : null}
 
-      {/* 1) Método de pago (siempre preguntamos) */}
+      {/* 1) Método de pago */}
       <section className="card" style={{ padding: 16, marginBottom: 16 }}>
         <h2 style={{ marginTop: 0 }}>1) Elegí el método de pago</h2>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -296,7 +342,7 @@ export default function CheckoutBrand() {
             </div>
           )}
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn" onClick={onConfirm} disabled={loading || !cart.items.length}>
+            <button className="btn" onClick={onConfirm} disabled={loading || !cart.items.length || !session?.user?.id}>
               {payment === "mp" ? "Pagar con Mercado Pago" : "Crear pedido"}
             </button>
             <Link href={`/marcas/${brandSlug}`} className="btn ghost">Volver al catálogo</Link>
