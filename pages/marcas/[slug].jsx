@@ -5,14 +5,61 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
-import { useCart } from "../_app"; // usamos el CartContext exportado en _app
 
 const CATS = ["Todas", "Remera", "Pantalon", "Buzo", "Campera", "Gorra", "Otros"];
+
+function useBrandCart(slug) {
+  const key = slug ? `cabure_cart_${slug}` : null;
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(key);
+      setItems(raw ? JSON.parse(raw) : []);
+    } catch {
+      setItems([]);
+    }
+  }, [key]);
+
+  useEffect(() => {
+    if (!key) return;
+    localStorage.setItem(key, JSON.stringify(items));
+  }, [key, items]);
+
+  const totals = useMemo(() => {
+    const qty = items.reduce((s, it) => s + it.qty, 0);
+    const amount = items.reduce((s, it) => s + (Number(it.price) || 0) * it.qty, 0);
+    return { qty, amount };
+  }, [items]);
+
+  function addItem(p) {
+    setItems((prev) => {
+      const idx = prev.findIndex((i) => i.id === p.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
+        return next;
+      }
+      return [...prev, { id: p.id, name: p.name, price: p.price, image_url: p.image_url || null, qty: 1 }];
+    });
+  }
+  function setQty(id, qty) {
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, qty: Math.max(1, qty) } : i)));
+  }
+  function removeItem(id) {
+    setItems((prev) => prev.filter((i) => i.id !== id));
+  }
+  function clear() {
+    setItems([]);
+  }
+
+  return { items, totals, addItem, setQty, removeItem, clear, storageKey: key };
+}
 
 export default function BrandCatalog() {
   const router = useRouter();
   const { slug } = router.query;
-  const { cart, addItem } = useCart() || {};
+  const cart = useBrandCart(slug);
 
   const [brand, setBrand] = useState(null); // null: loading; {}: ok; false: no encontrada
   const [products, setProducts] = useState(null);
@@ -26,7 +73,7 @@ export default function BrandCatalog() {
     (async () => {
       const { data, error } = await supabase
         .from("brands")
-        .select("id,name,slug,description,logo_url,color,instagram_url,active,deleted_at,bank_alias,bank_cbu,mp_access_token")
+        .select("id,name,slug,description,logo_url,color,instagram_url,active,deleted_at")
         .eq("slug", slug)
         .maybeSingle();
 
@@ -78,7 +125,7 @@ export default function BrandCatalog() {
     return list;
   }, [products, cat, q]);
 
-  const goCheckoutHref = brand?.slug ? `/checkout/${brand.slug}` : "#";
+  const checkoutHref = brand?.slug ? `/checkout/${brand.slug}` : "#";
 
   return (
     <div className="container">
@@ -139,8 +186,8 @@ export default function BrandCatalog() {
                   Instagram
                 </a>
               ) : null}
-              <Link href={goCheckoutHref} className="btn secondary">
-                Ir al checkout
+              <Link href={checkoutHref} className={`btn secondary ${cart.totals.qty ? "" : "disabled"}`}>
+                Ir al checkout {cart.totals.qty ? `(${cart.totals.qty})` : ""}
               </Link>
             </div>
 
@@ -208,7 +255,7 @@ export default function BrandCatalog() {
                     <button
                       className="btn"
                       style={{ marginTop: 8, width: "100%" }}
-                      onClick={() => addItem?.(p, { id: brand.id, slug: brand.slug })}
+                      onClick={() => cart.addItem(p)}
                       aria-label={`Agregar ${p.name} al carrito`}
                     >
                       Agregar al carrito
@@ -218,6 +265,47 @@ export default function BrandCatalog() {
               ))}
             </div>
           )}
+
+          {/* Mini-carrito de esta marca */}
+          <section className="card" style={{ padding: 16, marginTop: 16 }}>
+            <h2 style={{ marginTop: 0 }}>Carrito de {brand.name}</h2>
+            {!cart.items.length ? (
+              <div className="card" style={{ padding: 16 }}>Todavía no agregaste productos.</div>
+            ) : (
+              <>
+                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {cart.items.map((it) => (
+                    <li key={it.id} className="row" style={{ alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
+                      <div style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.name}</div>
+                      <div style={{ color: "var(--text-dim)" }}>${Number(it.price || 0).toLocaleString("es-AR")}</div>
+                      <input
+                        type="number"
+                        min={1}
+                        value={it.qty}
+                        onChange={(e) => cart.setQty(it.id, Number(e.target.value || 1))}
+                        className="input"
+                        style={{ width: 72 }}
+                        aria-label={`Cantidad de ${it.name}`}
+                      />
+                      <button className="btn ghost" onClick={() => cart.removeItem(it.id)}>Quitar</button>
+                    </li>
+                  ))}
+                </ul>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12 }}>
+                  <button className="btn ghost" onClick={() => cart.clear()}>Vaciar</button>
+                  <div style={{ textAlign: "right" }}>
+                    <div>Total</div>
+                    <strong>${Number(cart.totals.amount || 0).toLocaleString("es-AR")}</strong>
+                  </div>
+                </div>
+                <div style={{ marginTop: 12, textAlign: "right" }}>
+                  <Link href={checkoutHref} className="btn secondary">
+                    Ir al checkout {cart.totals.qty ? `(${cart.totals.qty})` : ""}
+                  </Link>
+                </div>
+              </>
+            )}
+          </section>
         </>
       )}
     </div>
