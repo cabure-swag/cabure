@@ -1,94 +1,11 @@
 // pages/_app.js
-import React, { useEffect, useState, useRef, createContext, useContext } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import Image from "next/image";
 import "@/styles/globals.css";
 import { supabase } from "@/lib/supabaseClient";
 
-/* ====================== CART CONTEXT (carrito por marca) ====================== */
-// Estructura: { brandId, brandSlug, items: [{id,name,price,image_url,qty}], totals: {qty, amount} }
-const CartCtx = createContext(null);
-export function useCart() {
-  return useContext(CartCtx);
-}
-function CartProvider({ children }) {
-  const [cart, setCart] = useState(null);
-
-  useEffect(() => {
-    try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem("cabure_cart_v1") : null;
-      if (raw) setCart(JSON.parse(raw));
-      else setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
-    } catch {
-      setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!cart || typeof window === "undefined") return;
-    localStorage.setItem("cabure_cart_v1", JSON.stringify(cart));
-  }, [cart]);
-
-  function recalc(items) {
-    const qty = items.reduce((s, it) => s + it.qty, 0);
-    const amount = items.reduce((s, it) => s + (Number(it.price) || 0) * it.qty, 0);
-    return { qty, amount };
-  }
-
-  function clearCart() {
-    setCart({ brandId: null, brandSlug: null, items: [], totals: { qty: 0, amount: 0 } });
-  }
-
-  function addItem(product, brand) {
-    setCart((prev) => {
-      const base =
-        prev && prev.brandId && prev.brandId !== brand.id
-          ? { brandId: brand.id, brandSlug: brand.slug, items: [], totals: { qty: 0, amount: 0 } }
-          : prev || { brandId: brand.id, brandSlug: brand.slug, items: [], totals: { qty: 0, amount: 0 } };
-
-      const items = [...base.items];
-      const idx = items.findIndex((i) => i.id === product.id);
-      if (idx >= 0) items[idx] = { ...items[idx], qty: items[idx].qty + 1 };
-      else
-        items.push({
-          id: product.id,
-          name: product.name,
-          price: product.price,
-          image_url: product.image_url || null,
-          qty: 1,
-        });
-
-      return { brandId: brand.id, brandSlug: brand.slug, items, totals: recalc(items) };
-    });
-  }
-
-  function setQty(productId, qty) {
-    setCart((prev) => {
-      if (!prev) return prev;
-      let items = prev.items.map((i) => (i.id === productId ? { ...i, qty: Math.max(1, qty) } : i));
-      return { ...prev, items, totals: recalc(items) };
-    });
-  }
-
-  function removeItem(productId) {
-    setCart((prev) => {
-      if (!prev) return prev;
-      let items = prev.items.filter((i) => i.id !== productId);
-      const next = { ...prev, items, totals: recalc(items) };
-      if (items.length === 0) {
-        next.brandId = null;
-        next.brandSlug = null;
-      }
-      return next;
-    });
-  }
-
-  const value = { cart, addItem, setQty, removeItem, clearCart };
-  return <CartCtx.Provider value={value}>{children}</CartCtx.Provider>;
-}
-
-/* ====================== Util: click afuera ====================== */
 function useClickAway(ref, onAway) {
   useEffect(() => {
     function handler(e) {
@@ -100,8 +17,7 @@ function useClickAway(ref, onAway) {
   }, [ref, onAway]);
 }
 
-/* ====================== Header ====================== */
-function Header({ role, session, cart }) {
+function Header({ role, session }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
   useClickAway(menuRef, () => setOpen(false));
@@ -133,8 +49,6 @@ function Header({ role, session, cart }) {
     await supabase.auth.signOut();
   };
 
-  const cartHref = cart?.brandSlug ? `/checkout/${cart.brandSlug}` : "#";
-
   return (
     <header className="header" role="banner">
       <div className="header-inner container" style={{ gap: 12, display: "flex", alignItems: "center" }}>
@@ -146,18 +60,8 @@ function Header({ role, session, cart }) {
 
         <div style={{ flex: 1 }} />
 
-        {/* DERECHA */}
+        {/* DERECHA (sin carrito) */}
         <nav aria-label="Accesos" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Carrito */}
-          <Link
-            href={cartHref}
-            aria-disabled={!cart?.brandSlug}
-            className="btn secondary"
-            style={{ opacity: cart?.totals?.qty > 0 ? 1 : 0.6, pointerEvents: cart?.brandSlug ? "auto" : "none" }}
-          >
-            Carrito{cart?.totals?.qty ? ` (${cart.totals.qty})` : ""}
-          </Link>
-
           {(isVendor || isAdmin) && (
             <Link className="btn secondary" href="/vendor" aria-label="Vendor">
               Vendor
@@ -266,10 +170,9 @@ function Header({ role, session, cart }) {
   );
 }
 
-/* ====================== App ====================== */
 export default function MyApp({ Component, pageProps }) {
   const [session, setSession] = useState(null);
-  const [role, setRole] = useState(null); // 'admin' | 'vendor' | null
+  const [role, setRole] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -315,7 +218,7 @@ export default function MyApp({ Component, pageProps }) {
   }, []);
 
   return (
-    <CartProvider>
+    <>
       <Head>
         <title>CABURE.STORE</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -328,14 +231,10 @@ export default function MyApp({ Component, pageProps }) {
         )}
       </Head>
 
-      {/* Header arriba de todo */}
-      <CartCtx.Consumer>
-        {(cartState) => <Header role={role} session={session} cart={cartState?.cart} />}
-      </CartCtx.Consumer>
-
+      <Header role={role} session={session} />
       <main className="container">
         <Component {...pageProps} />
       </main>
-    </CartProvider>
+    </>
   );
 }
