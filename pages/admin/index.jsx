@@ -3,9 +3,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 
-export default function AdminHome() {
+function AdminHomeInner() {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
   const [brands, setBrands] = useState(null);
@@ -18,11 +19,7 @@ export default function AdminHome() {
       const s = data?.session ?? null;
       setSession(s);
       if (s?.user?.id) {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", s.user.id)
-          .maybeSingle();
+        const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", s.user.id).maybeSingle();
         setRole(prof?.role ?? null);
       } else setRole(null);
     })();
@@ -30,11 +27,7 @@ export default function AdminHome() {
       setSession(s);
       (async () => {
         if (s?.user?.id) {
-          const { data: prof } = await supabase
-            .from("profiles")
-            .select("role")
-            .eq("user_id", s.user.id)
-            .maybeSingle();
+          const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", s.user.id).maybeSingle();
           setRole(prof?.role ?? null);
         } else setRole(null);
       })();
@@ -85,10 +78,7 @@ export default function AdminHome() {
     );
   }
 
-  const currentBrand = useMemo(
-    () => (brands || []).find((b) => b.id === brandId) || null,
-    [brands, brandId]
-  );
+  const currentBrand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
 
   return (
     <div className="container">
@@ -110,16 +100,9 @@ export default function AdminHome() {
         <>
           <section className="card" style={{ padding: 12, marginTop: 12 }}>
             <label className="input-label">Marca</label>
-            <select
-              className="input"
-              value={brandId || ""}
-              onChange={(e) => setBrandId(e.target.value)}
-              aria-label="Seleccionar marca"
-            >
+            <select className="input" value={brandId || ""} onChange={(e) => setBrandId(e.target.value)} aria-label="Seleccionar marca">
               {brands.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name} — /marcas/{b.slug}
-                </option>
+                <option key={b.id} value={b.id}>{b.name} — /marcas/{b.slug}</option>
               ))}
             </select>
           </section>
@@ -136,7 +119,6 @@ export default function AdminHome() {
   );
 }
 
-/** ===== Edición básica de marca (admin) ===== */
 function BrandEditor({ b }) {
   const [saving, setSaving] = useState(false);
   async function update(partial) {
@@ -199,76 +181,48 @@ function BrandEditor({ b }) {
   );
 }
 
-/** ===== Vendedores asignados (admin) ===== */
 function BrandVendors({ brandId }) {
-  const [links, setLinks] = useState(null); // [{id, user_id}]
-  const [profiles, setProfiles] = useState({}); // user_id -> {email, role}
+  const [links, setLinks] = useState(null);
+  const [profiles, setProfiles] = useState({});
   const [emailToAdd, setEmailToAdd] = useState("");
   const [uiError, setUiError] = useState("");
 
   async function load() {
     setUiError("");
     try {
-      const { data: bu, error: e1 } = await supabase
-        .from("brand_users")
-        .select("id, user_id")
-        .eq("brand_id", brandId)
-        .order("id", { ascending: true });
+      const { data: bu, error: e1 } = await supabase.from("brand_users").select("id, user_id").eq("brand_id", brandId).order("id", { ascending: true });
       if (e1) throw e1;
       setLinks(bu || []);
-
       const userIds = [...new Set((bu || []).map((x) => x.user_id))];
       if (userIds.length) {
-        const { data: profs, error: e2 } = await supabase
-          .from("profiles")
-          .select("user_id, email, role")
-          .in("user_id", userIds);
+        const { data: profs, error: e2 } = await supabase.from("profiles").select("user_id, email, role").in("user_id", userIds);
         if (e2) throw e2;
         const map = {};
         for (const p of profs || []) map[p.user_id] = { email: p.email, role: p.role };
         setProfiles(map);
-      } else {
-        setProfiles({});
-      }
+      } else setProfiles({});
     } catch (e) {
       setLinks([]);
       setProfiles({});
       setUiError(e.message || "No se pudo cargar vendedores.");
     }
   }
-
   useEffect(() => { load(); }, [brandId]);
 
   async function addVendorByEmail(e) {
     e.preventDefault();
     const email = emailToAdd.trim().toLowerCase();
     if (!email) return;
-
     try {
-      // 1) buscar profile por email
-      const { data: prof, error: e1 } = await supabase
-        .from("profiles")
-        .select("user_id, role")
-        .eq("email", email)
-        .maybeSingle();
+      const { data: prof, error: e1 } = await supabase.from("profiles").select("user_id, role").eq("email", email).maybeSingle();
       if (e1) throw e1;
-      if (!prof?.user_id) { alert("Ese email no tiene perfil aún (debe haber iniciado sesión al menos una vez)."); return; }
-
-      // 2) asegurar rol vendor
+      if (!prof?.user_id) { alert("Ese email no tiene perfil aún (debe iniciar sesión al menos una vez)."); return; }
       if (prof.role !== "vendor") {
-        const { error: e2 } = await supabase
-          .from("profiles")
-          .update({ role: "vendor" })
-          .eq("user_id", prof.user_id);
+        const { error: e2 } = await supabase.from("profiles").update({ role: "vendor" }).eq("user_id", prof.user_id);
         if (e2) throw e2;
       }
-
-      // 3) insertar en brand_users (único)
-      const { error: e3 } = await supabase
-        .from("brand_users")
-        .insert({ brand_id: brandId, user_id: prof.user_id });
+      const { error: e3 } = await supabase.from("brand_users").insert({ brand_id: brandId, user_id: prof.user_id });
       if (e3) throw e3;
-
       setEmailToAdd("");
       await load();
     } catch (err) {
@@ -295,20 +249,11 @@ function BrandVendors({ brandId }) {
 
       {uiError ? <div className="card" style={{ padding: 12, border: "1px solid #a33", marginTop: 8 }}>{uiError}</div> : null}
 
-      {/* Agregar por email */}
       <form onSubmit={addVendorByEmail} className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-        <input
-          className="input"
-          type="email"
-          placeholder="email@ejemplo.com"
-          value={emailToAdd}
-          onChange={(e) => setEmailToAdd(e.target.value)}
-          style={{ minWidth: 260 }}
-        />
+        <input className="input" type="email" placeholder="email@ejemplo.com" value={emailToAdd} onChange={(e) => setEmailToAdd(e.target.value)} style={{ minWidth: 260 }} />
         <button className="btn" type="submit">Agregar vendedor</button>
       </form>
 
-      {/* Lista */}
       <div className="card" style={{ padding: 0, marginTop: 12, overflowX: "auto" }}>
         {!links ? (
           <div className="skel" style={{ height: 120 }} />
@@ -330,9 +275,7 @@ function BrandVendors({ brandId }) {
                   <tr key={l.id}>
                     <td>{p?.email || l.user_id}</td>
                     <td>{p?.role || "—"}</td>
-                    <td>
-                      <button className="btn danger" onClick={() => removeVendor(l.id)}>Quitar</button>
-                    </td>
+                    <td><button className="btn danger" onClick={() => removeVendor(l.id)}>Quitar</button></td>
                   </tr>
                 );
               })}
@@ -343,3 +286,7 @@ function BrandVendors({ brandId }) {
     </section>
   );
 }
+
+// Export sólo en cliente para evitar errores de hidratación
+function AdminHome() { return <AdminHomeInner />; }
+export default dynamic(() => Promise.resolve(AdminHome), { ssr: false });
