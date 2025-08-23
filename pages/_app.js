@@ -8,7 +8,6 @@ import { supabase } from "@/lib/supabaseClient";
 import "@/styles/globals.css";
 
 function Header({ session, role }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const email = session?.user?.email || "";
 
   async function login() {
@@ -19,59 +18,33 @@ function Header({ session, role }) {
     }
   }
   async function logout() {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
+    try { await supabase.auth.signOut(); } catch {}
   }
 
   return (
     <header style={{ position: "sticky", top: 0, zIndex: 50, background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>
       <div className="container" style={{ display: "flex", alignItems: "center", height: 64 }}>
-        <Link href="/" className="logo" aria-label="Ir al inicio" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Link href="/" className="logo" aria-label="Ir al inicio" style={{ display:"flex", alignItems:"center", gap:8 }}>
           <Image src="/cabure-logo.png" width={28} height={28} alt="CABURE logo" />
           <span style={{ fontWeight: 700, letterSpacing: 0.3 }}>CABURE.STORE</span>
         </Link>
 
         <div style={{ flex: 1 }} />
 
-        {/* Navegación desktop */}
-        <nav className="hide-sm" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <nav style={{ display:"flex", gap: 8, alignItems:"center" }}>
           <Link className="btn ghost" href="/soporte">Soporte</Link>
           {role === "admin" && <Link className="btn ghost" href="/admin">Admin</Link>}
           {(role === "vendor" || role === "admin") && <Link className="btn ghost" href="/vendor">Vendor</Link>}
           {!session ? (
             <button className="btn" onClick={login} aria-label="Iniciar sesión">Iniciar sesión</button>
           ) : (
-            <div className="user-badge" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span className="chip" title={email}>{email || "Usuario"}</span>
               <button className="btn ghost" onClick={logout}>Salir</button>
             </div>
           )}
         </nav>
-
-        {/* Botón hamburguesa (solo mobile) */}
-        <button className="btn ghost show-sm" onClick={() => setMenuOpen(!menuOpen)} aria-label="Abrir menú">☰</button>
       </div>
-
-      {/* Menú mobile */}
-      {menuOpen && (
-        <div className="container show-sm" style={{ paddingBottom: 12 }}>
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            {/* NOTA: sacamos “Soporte” del menú mobile para evitar duplicado visual */}
-            {role === "admin" && <Link className="btn ghost" href="/admin" onClick={() => setMenuOpen(false)}>Admin</Link>}
-            {(role === "vendor" || role === "admin") && <Link className="btn ghost" href="/vendor" onClick={() => setMenuOpen(false)}>Vendor</Link>}
-            {!session ? (
-              <button className="btn" onClick={async () => { await supabase.auth.signInWithOAuth({ provider: "google" }); setMenuOpen(false); }}>
-                Iniciar sesión
-              </button>
-            ) : (
-              <button className="btn ghost" onClick={async () => { await supabase.auth.signOut(); setMenuOpen(false); }}>
-                Salir
-              </button>
-            )}
-          </div>
-        </div>
-      )}
     </header>
   );
 }
@@ -112,8 +85,8 @@ function AppContent({ Component, pageProps }) {
       <main className="container" style={{ paddingTop: 16, paddingBottom: 32 }}>
         <Component {...pageProps} session={session} role={role} />
       </main>
-      <footer style={{ borderTop: "1px solid var(--border)" }}>
-        <div className="container" style={{ padding: "16px 0", fontSize: 12, opacity: 0.7 }}>
+      <footer style={{ borderTop:"1px solid var(--border)" }}>
+        <div className="container" style={{ padding:"16px 0", fontSize:12, opacity:0.7 }}>
           © {new Date().getFullYear()} CABURE.STORE
         </div>
       </footer>
