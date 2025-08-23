@@ -1,75 +1,143 @@
-import { useEffect, useRef, useState } from "react";
+// components/ChatBox.jsx
+import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { useToast } from "./Toast";
 
-export default function ChatBox({ threadId, adminView=false, onCloseThread }){
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [thread, setThread] = useState(null);
-  const scrollerRef = useRef();
-  const { push } = useToast();
+export default function ChatBox({ threadId, adminView = false }) {
+  const [session, setSession] = useState(null);
+  const [messages, setMessages] = useState(null);
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const listRef = useRef(null);
 
+  // sesión
   useEffect(() => {
     (async () => {
-      const { data: t } = await supabase.from('support_threads').select('*').eq('id', threadId).single();
-      setThread(t);
-      const { data: ms } = await supabase.from('support_messages').select('*').eq('thread_id', threadId).order('created_at', { ascending: true });
-      setMessages(ms || []);
+      try {
+        const { data } = await supabase.auth.getSession();
+        setSession(data?.session ?? null);
+      } catch {}
     })();
-  }, [threadId]);
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub?.subscription?.unsubscribe?.();
+  }, []);
 
+  // cargar y suscribir
   useEffect(() => {
+    if (!threadId) return;
+    let mounted = true;
+
+    async function load() {
+      setError("");
+      try {
+        const { data, error } = await supabase
+          .from("support_messages")
+          .select("id, sender_role, message, created_at")
+          .eq("thread_id", threadId)
+          .order("created_at", { ascending: true });
+        if (error) throw error;
+        if (!mounted) return;
+        setMessages(data || []);
+        // autoscroll
+        setTimeout(() => {
+          listRef.current?.scrollTo?.({ top: listRef.current.scrollHeight, behavior: "auto" });
+        }, 0);
+      } catch (e) {
+        setMessages([]);
+        setError(e.message || "No se pudieron cargar los mensajes.");
+      }
+    }
+
+    load();
+
     const channel = supabase
-      .channel(`support_messages:${threadId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'support_messages', filter: `thread_id=eq.${threadId}` }, (payload) => {
-        setMessages(prev => {
-          const copy = [...prev];
-          if (payload.eventType === 'INSERT') copy.push(payload.new);
-          return copy;
-        });
-      })
+      .channel(`chat-${threadId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "support_messages", filter: `thread_id=eq.${threadId}` },
+        (payload) => {
+          setMessages((prev) => {
+            const arr = Array.isArray(prev) ? prev.slice() : [];
+            arr.push(payload.new);
+            return arr;
+          });
+          setTimeout(() => {
+            listRef.current?.scrollTo?.({ top: listRef.current.scrollHeight, behavior: "smooth" });
+          }, 0);
+        }
+      )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
   }, [threadId]);
 
-  useEffect(() => {
-    scrollerRef.current?.scrollTo(0, 1e9);
-  }, [messages.length]);
+  async function send(e) {
+    e.preventDefault();
+    if (!text.trim() || !threadId) return;
+    const body = {
+      thread_id: threadId,
+      sender_role: adminView ? "admin" : "user",
+      message: text.trim(),
+    };
+    // Optimistic
+    const temp = {
+      id: `tmp-${Date.now()}`,
+      ...body,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => ([...(prev || []), temp]));
+    setText("");
 
-  const send = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return push("Necesitás ingresar para chatear");
-    const sender_role = adminView ? 'admin' : 'user';
-    const optimistic = { id: Math.random(), thread_id: threadId, sender_role, message: input, created_at: new Date().toISOString() };
-    setMessages(m => [...m, optimistic]);
-    setInput("");
-    const { error } = await supabase.from('support_messages').insert({ thread_id: threadId, sender_role, message: optimistic.message });
-    if (error) push("Error al enviar mensaje");
-  };
-
-  const handleKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+    const { error } = await supabase.from("support_messages").insert(body);
+    if (error) {
+      setError(error.message || "No se pudo enviar el mensaje.");
+      // revertir si falla (opcional)
+      setMessages((prev) => (prev || []).filter((m) => m.id !== temp.id));
+    }
+  }
 
   return (
-    <div className="card" style={{height: 420, display:'flex', flexDirection:'column'}}>
-      <div className="card-body" style={{flex:1, overflow:'auto'}} ref={scrollerRef}>
-        {messages.map((m) => (
-          <div key={m.id} style={{ display:'flex', justifyContent: m.sender_role==='admin' ? 'flex-end' : 'flex-start', marginBottom:8 }}>
-            <div style={{ background:m.sender_role==='admin'?'#0f172a':'#111827', border:'1px solid #1f2937', padding:'8px 10px', borderRadius:12, maxWidth:'80%'}}>
-              <div style={{fontSize:12, color:'var(--muted)'}}>{m.sender_role==='admin'?'Admin':'Cliente'}</div>
-              <div>{m.message}</div>
+    <div className="card" style={{ padding: 12, display: "flex", flexDirection: "column", height: 420 }}>
+      <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "#0E1012" }}>
+        {!messages ? (
+          <div className="skel" style={{ height: 80 }} />
+        ) : messages.length === 0 ? (
+          <div style={{ opacity: 0.8 }}>Todavía no hay mensajes.</div>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} style={{ marginBottom: 8, display: "flex", justifyContent: m.sender_role === "admin" ? "flex-end" : "flex-start" }}>
+              <div style={{
+                maxWidth: "80%",
+                background: m.sender_role === "admin" ? "#1F2937" : "#111827",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                padding: "8px 10px",
+                fontSize: 14
+              }}>
+                <div style={{ opacity: 0.7, fontSize: 11, marginBottom: 4 }}>{m.sender_role}</div>
+                <div>{m.message}</div>
+              </div>
             </div>
-          </div>
-        ))}
-        {messages.length===0 && <div className="status-empty">No hay mensajes todavía.</div>}
+          ))
+        )}
       </div>
-      <div style={{padding:12, borderTop:'1px solid #1f2937'}}>
-        <textarea aria-label="Escribe tu mensaje" className="input" rows={2} placeholder="Escribe un mensaje…" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKey}/>
-        <div className="row" style={{justifyContent:'space-between', marginTop:8}}>
-          {adminView && thread?.status==='open' && <button className="btn btn-ghost" onClick={onCloseThread}>Cerrar ticket</button>}
-          <div style={{flex:1}} />
-          <button className="btn btn-primary" onClick={send} aria-label="Enviar">Enviar</button>
-        </div>
-      </div>
+
+      {error && <div className="card" style={{ marginTop: 8, padding: 8, border: "1px solid #a33" }}>{error}</div>}
+
+      <form onSubmit={send} className="row" style={{ gap: 8, marginTop: 8 }}>
+        <input
+          className="input"
+          placeholder="Escribí tu mensaje…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          aria-label="Mensaje"
+        />
+        <button className="btn" type="submit" disabled={!threadId || !text.trim()}>
+          Enviar
+        </button>
+      </form>
     </div>
   );
 }
