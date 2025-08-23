@@ -3,12 +3,13 @@ import React, { useEffect, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import Image from "next/image";
-import dynamic from "next/dynamic";
-import ErrorBoundary from "@/components/ErrorBoundary";
 import { supabase } from "@/lib/supabaseClient";
 import "@/styles/globals.css";
 
 function Header({ session, role }) {
+  const [isHydrated, setIsHydrated] = useState(false);
+  useEffect(() => { setIsHydrated(true); }, []);
+
   const email = session?.user?.email || "";
 
   async function login() {
@@ -34,9 +35,13 @@ function Header({ session, role }) {
 
         <nav style={{ display:"flex", gap: 8, alignItems:"center" }}>
           <Link className="btn ghost" href="/soporte">Soporte</Link>
-          {role === "admin" && <Link className="btn ghost" href="/admin">Admin</Link>}
-          {(role === "vendor" || role === "admin") && <Link className="btn ghost" href="/vendor">Vendor</Link>}
-          {!session ? (
+
+          {/* Enlaces por rol SOLO después de hidratar (evita #310) */}
+          {isHydrated && role === "admin" && <Link className="btn ghost" href="/admin">Admin</Link>}
+          {isHydrated && (role === "vendor" || role === "admin") && <Link className="btn ghost" href="/vendor">Vendor</Link>}
+
+          {/* Botón de sesión: estable en SSR y cambia tras hidratar */}
+          {!isHydrated || !session ? (
             <button className="btn" onClick={login} aria-label="Iniciar sesión">Iniciar sesión</button>
           ) : (
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -50,7 +55,7 @@ function Header({ session, role }) {
   );
 }
 
-function AppContent({ Component, pageProps }) {
+export default function MyApp({ Component, pageProps }) {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
 
@@ -82,6 +87,7 @@ function AppContent({ Component, pageProps }) {
 
   return (
     <>
+      <Head><meta name="viewport" content="width=device-width, initial-scale=1" /></Head>
       <Header session={session} role={role} />
       <main className="container" style={{ paddingTop: 16, paddingBottom: 32 }}>
         <Component {...pageProps} session={session} role={role} />
@@ -91,20 +97,6 @@ function AppContent({ Component, pageProps }) {
           © {new Date().getFullYear()} CABURE.STORE
         </div>
       </footer>
-    </>
-  );
-}
-
-// ⚠️ Deshabilitamos SSR de TODO el árbol para evitar el error #310.
-const NoSSRApp = dynamic(() => Promise.resolve(AppContent), { ssr: false });
-
-export default function MyApp(props) {
-  return (
-    <>
-      <Head><meta name="viewport" content="width=device-width, initial-scale=1" /></Head>
-      <ErrorBoundary>
-        <NoSSRApp {...props} />
-      </ErrorBoundary>
     </>
   );
 }
