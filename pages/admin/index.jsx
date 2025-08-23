@@ -6,7 +6,7 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 
-function AdminHomeInner() {
+function AdminInner() {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
   const [brands, setBrands] = useState(null);
@@ -78,11 +78,15 @@ function AdminHomeInner() {
     );
   }
 
-  const currentBrand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
+  const currentBrand = useMemo(
+    () => (brands || []).find((b) => b.id === brandId) || null,
+    [brands, brandId]
+  );
 
   return (
     <div className="container">
       <Head><title>Admin — CABURE.STORE</title></Head>
+
       <div className="row" style={{ alignItems: "center" }}>
         <h1 style={{ margin: 0 }}>Admin</h1>
         <div style={{ flex: 1 }} />
@@ -100,9 +104,16 @@ function AdminHomeInner() {
         <>
           <section className="card" style={{ padding: 12, marginTop: 12 }}>
             <label className="input-label">Marca</label>
-            <select className="input" value={brandId || ""} onChange={(e) => setBrandId(e.target.value)} aria-label="Seleccionar marca">
+            <select
+              className="input"
+              value={brandId || ""}
+              onChange={(e) => setBrandId(e.target.value)}
+              aria-label="Seleccionar marca"
+            >
               {brands.map((b) => (
-                <option key={b.id} value={b.id}>{b.name} — /marcas/{b.slug}</option>
+                <option key={b.id} value={b.id}>
+                  {b.name} — /marcas/{b.slug}
+                </option>
               ))}
             </select>
           </section>
@@ -170,7 +181,7 @@ function BrandEditor({ b }) {
           <label className="input-label">Instagram (URL)</label>
           <input className="input" type="url" defaultValue={b.instagram_url || ""} onBlur={(e) => update({ instagram_url: e.target.value || null })} />
           <label className="input-label" style={{ marginTop: 8 }}>Logo</label>
-          <input type="file" className="input" accept="image/*" onChange={handleLogo} disabled={saving} />
+          <input type="file" className="input" accept="image/*" onChange={handleLogo} />
           <div style={{ width: 120, height: 120, position: "relative", marginTop: 8, background: "#0E1012", borderRadius: 12 }}>
             {b.logo_url && <Image src={b.logo_url} alt={b.name} fill sizes="120px" style={{ objectFit: "contain" }} unoptimized />}
           </div>
@@ -190,12 +201,19 @@ function BrandVendors({ brandId }) {
   async function load() {
     setUiError("");
     try {
-      const { data: bu, error: e1 } = await supabase.from("brand_users").select("id, user_id").eq("brand_id", brandId).order("id", { ascending: true });
+      const { data: bu, error: e1 } = await supabase
+        .from("brand_users")
+        .select("id, user_id")
+        .eq("brand_id", brandId)
+        .order("id", { ascending: true });
       if (e1) throw e1;
       setLinks(bu || []);
       const userIds = [...new Set((bu || []).map((x) => x.user_id))];
       if (userIds.length) {
-        const { data: profs, error: e2 } = await supabase.from("profiles").select("user_id, email, role").in("user_id", userIds);
+        const { data: profs, error: e2 } = await supabase
+          .from("profiles")
+          .select("user_id, email, role")
+          .in("user_id", userIds);
         if (e2) throw e2;
         const map = {};
         for (const p of profs || []) map[p.user_id] = { email: p.email, role: p.role };
@@ -287,6 +305,5 @@ function BrandVendors({ brandId }) {
   );
 }
 
-// Export sólo en cliente para evitar errores de hidratación
-function AdminHome() { return <AdminHomeInner />; }
-export default dynamic(() => Promise.resolve(AdminHome), { ssr: false });
+// Exportamos el componente **interno** directamente con ssr:false
+export default dynamic(() => Promise.resolve(AdminInner), { ssr: false });
