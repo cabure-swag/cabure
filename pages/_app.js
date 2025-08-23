@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { supabase } from "@/lib/supabaseClient";
 import "@/styles/globals.css";
@@ -94,12 +95,15 @@ function AppContent({ Component, pageProps }) {
   );
 }
 
+// ⚠️ Deshabilitamos SSR de TODO el árbol para evitar el error #310.
+const NoSSRApp = dynamic(() => Promise.resolve(AppContent), { ssr: false });
+
 export default function MyApp(props) {
   return (
     <>
       <Head><meta name="viewport" content="width=device-width, initial-scale=1" /></Head>
       <ErrorBoundary>
-        <AppContent {...props} />
+        <NoSSRApp {...props} />
       </ErrorBoundary>
     </>
   );
