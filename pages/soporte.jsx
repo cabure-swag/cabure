@@ -1,121 +1,101 @@
 // pages/soporte.jsx
 import React, { useEffect, useState } from "react";
 import Head from "next/head";
+import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import ChatBox from "@/components/ChatBox";
-import { useToast } from "@/components/Toast";
 
-export default function Soporte() {
+function SoporteInner() {
   const [session, setSession] = useState(null);
   const [threadId, setThreadId] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
 
-  // useToast puede ser null en SSR; usamos fallback no-op
-  const toast = useToast();
-  const push = toast?.push ?? (() => {});
-
-  // Sesión + listener
   useEffect(() => {
-    let isMounted = true;
-
-    supabase.auth.getSession().then(({ data }) => {
-      if (isMounted) setSession(data.session ?? null);
-    });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => {
-      if (isMounted) setSession(s);
-    });
-
-    return () => {
-      isMounted = false;
-      listener?.subscription?.unsubscribe?.();
-    };
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!alive) return;
+        setSession(data?.session ?? null);
+      } catch {}
+    })();
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // Crear o reabrir hilo
   useEffect(() => {
-    if (!session) return;
-
+    if (!session?.user?.id) { setThreadId(null); return; }
     (async () => {
-      const user_id = session.user.id;
-
-      let { data: t, error: selErr } = await supabase
-        .from("support_threads")
-        .select("id")
-        .eq("user_id", user_id)
-        .eq("status", "open")
-        .maybeSingle();
-
-      if (selErr) {
-        push("No se pudo abrir soporte");
-        return;
-      }
-
-      if (!t) {
-        const { data, error } = await supabase
+      setLoading(true);
+      setErr("");
+      try {
+        const user_id = session.user.id;
+        // buscar hilo abierto
+        let { data: t, error } = await supabase
           .from("support_threads")
-          .insert({ user_id })
           .select("id")
+          .eq("user_id", user_id)
+          .eq("status","open")
           .maybeSingle();
-
-        if (error) {
-          push("No se pudo abrir soporte");
-          return;
+        if (error) throw error;
+        if (!t) {
+          const { data, error: e2 } = await supabase
+            .from("support_threads")
+            .insert({ user_id })
+            .select("id")
+            .maybeSingle();
+          if (e2) throw e2;
+          t = data;
         }
-        t = data;
+        setThreadId(t?.id || null);
+      } catch (e) {
+        setErr(e.message || "No se pudo abrir soporte.");
+        setThreadId(null);
+      } finally {
+        setLoading(false);
       }
-
-      setThreadId(t?.id ?? null);
     })();
-  }, [session, push]);
+  }, [session?.user?.id]);
 
-  // LOGIN — volver al MISMO dominio
-  const login = async () => {
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo:
-          typeof window !== "undefined"
-            ? `${window.location.origin}/soporte`
-            : undefined,
-      },
-    });
-  };
-
-  const logout = async () => {
-    await supabase.auth.signOut();
-    setThreadId(null);
-  };
+  async function login() {
+    try {
+      await supabase.auth.signInWithOAuth({ provider:"google" });
+    } catch (e) { alert(e.message || "No se pudo iniciar sesión."); }
+  }
+  async function logout() {
+    try { await supabase.auth.signOut(); } catch {}
+  }
 
   return (
     <div className="container">
-      <Head>
-        <title>Soporte — CABURE.STORE</title>
-        <meta name="robots" content="noindex" />
-      </Head>
+      <Head><title>Soporte — CABURE.STORE</title></Head>
 
       {!session ? (
-        <div className="card" role="status" style={{ padding: 24 }}>
-          <p style={{ marginBottom: 12 }}>Ingresá para abrir el chat de soporte.</p>
-          <button className="btn" onClick={login} aria-label="Ingresar con Google">
-            Ingresar con Google
-          </button>
+        <div className="status-empty card" style={{ padding: 24 }}>
+          <h1>Soporte</h1>
+          <p>Ingresá para abrir el chat de soporte.</p>
+          <button className="btn" onClick={login} aria-label="Ingresar con Google">Ingresar con Google</button>
         </div>
       ) : (
         <>
-          <div
-            className="row"
-            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}
-          >
-            <h1>Soporte</h1>
-            <button className="btn secondary" onClick={logout}>
-              Salir
-            </button>
+          <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+            <h1 style={{ margin: 0 }}>Soporte</h1>
+            <button className="btn ghost" onClick={logout}>Salir</button>
           </div>
 
-          {threadId ? (
-            <ChatBox threadId={threadId} />
+          {err && <div className="card" style={{ padding: 12, border: "1px solid #a33", marginTop: 12 }}>{err}</div>}
+
+          {loading ? (
+            <div className="status-loading skeleton" style={{ height: 80, marginTop: 12 }} />
+          ) : threadId ? (
+            <div style={{ marginTop: 12 }}>
+              <ChatBox threadId={threadId} />
+            </div>
           ) : (
-            <div className="skel" style={{ height: 80, borderRadius: 12 }} />
+            <div className="card" style={{ padding: 16, marginTop: 12 }}>
+              No se pudo iniciar el chat. Probá nuevamente.
+            </div>
           )}
         </>
       )}
@@ -123,7 +103,4 @@ export default function Soporte() {
   );
 }
 
-// Forzamos SSR para esta página (evita errores al export/prerender)
-export async function getServerSideProps() {
-  return { props: {} };
-}
+export default dynamic(() => Promise.resolve(SoporteInner), { ssr: false });
