@@ -61,7 +61,7 @@ export default function BrandCatalog() {
   const { slug } = router.query;
   const cart = useBrandCart(slug);
 
-  const [brand, setBrand] = useState(null); // null: loading; {}: ok; false: no encontrada
+  const [brand, setBrand] = useState(null);
   const [products, setProducts] = useState(null);
   const [cat, setCat] = useState("Todas");
   const [q, setQ] = useState("");
@@ -79,7 +79,7 @@ export default function BrandCatalog() {
 
       if (!alive) return;
       if (error || !data || !data.active || data.deleted_at) {
-        setBrand(false); // no encontrada o no pública
+        setBrand(false);
       } else {
         setBrand(data);
       }
@@ -167,6 +167,8 @@ export default function BrandCatalog() {
                     fill
                     sizes="72px"
                     style={{ objectFit: "cover" }}
+                    unoptimized
+                    onError={(e) => { e.currentTarget.style.display = "none"; }}
                   />
                 ) : null}
               </div>
@@ -241,6 +243,8 @@ export default function BrandCatalog() {
                         fill
                         sizes="360px"
                         style={{ objectFit: "cover" }}
+                        unoptimized
+                        onError={(e) => { e.currentTarget.style.display = "none"; }}
                       />
                     ) : null}
                   </div>
