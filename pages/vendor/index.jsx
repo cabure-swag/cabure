@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import Image from "next/image";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 
 const fmtMoney = (n) => `$ ${Number(n || 0).toLocaleString("es-AR")}`;
@@ -10,19 +11,17 @@ const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("es-AR") : "—");
 const CATS = ["Remera","Pantalon","Buzo","Campera","Gorra","Otros"];
 
 function downloadCSV(filename, rows) {
-  if (typeof window === "undefined") return; // SSR guard
+  if (typeof window === "undefined") return;
   if (!rows?.length) return;
   const headers = Object.keys(rows[0]);
   const csv = [
     headers.join(","),
     ...rows.map((r) =>
-      headers
-        .map((h) => {
-          const v = r[h] ?? "";
-          const s = String(v).replace(/"/g, '""');
-          return /[",\n]/.test(s) ? `"${s}"` : s;
-        })
-        .join(",")
+      headers.map((h) => {
+        const v = r[h] ?? "";
+        const s = String(v).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? `"${s}"` : s;
+      }).join(",")
     ),
   ].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -34,14 +33,13 @@ function downloadCSV(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
-export default function VendorPage() {
+function VendorInner() {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
   const [brands, setBrands] = useState(null);
   const [brandId, setBrandId] = useState(null);
   const [uiError, setUiError] = useState("");
 
-  // Sesión + rol
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -51,15 +49,9 @@ export default function VendorPage() {
         if (!alive) return;
         setSession(s);
         if (s?.user?.id) {
-          const { data: prof } = await supabase
-            .from("profiles")
-            .select("role")
-            .eq("user_id", s.user.id)
-            .maybeSingle();
+          const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", s.user.id).maybeSingle();
           setRole(prof?.role ?? null);
-        } else {
-          setRole(null);
-        }
+        } else setRole(null);
       } catch (e) {
         setUiError("No se pudo cargar la sesión.");
       }
@@ -68,11 +60,7 @@ export default function VendorPage() {
       setSession(s);
       (async () => {
         if (s?.user?.id) {
-          const { data: prof } = await supabase
-            .from("profiles")
-            .select("role")
-            .eq("user_id", s.user.id)
-            .maybeSingle();
+          const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", s.user.id).maybeSingle();
           setRole(prof?.role ?? null);
         } else setRole(null);
       })();
@@ -80,35 +68,22 @@ export default function VendorPage() {
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // Marcas del vendor (o todas si admin)
   useEffect(() => {
     if (!session?.user?.id) return;
     (async () => {
       try {
         setUiError("");
-        const { data: links, error: e1 } = await supabase
-          .from("brand_users")
-          .select("brand_id")
-          .eq("user_id", session.user.id);
+        const { data: links, error: e1 } = await supabase.from("brand_users").select("brand_id").eq("user_id", session.user.id);
         if (e1) throw e1;
         const ids = (links || []).map((l) => l.brand_id);
 
-        let q = supabase
-          .from("brands")
-          .select("id,name,slug,description,instagram_url,logo_url,color,active,deleted_at")
-          .order("name");
-
+        let q = supabase.from("brands").select("id,name,slug,description,instagram_url,logo_url,color,active,deleted_at").order("name");
         if (role !== "admin") {
-          if (!ids.length) {
-            setBrands([]);
-            return;
-          }
+          if (!ids.length) { setBrands([]); return; }
           q = q.in("id", ids);
         }
-
         const { data, error } = await q;
         if (error) throw error;
-
         const list = data || [];
         setBrands(list);
         if (!brandId && list.length) setBrandId(list[0].id);
@@ -145,10 +120,7 @@ export default function VendorPage() {
     );
   }
 
-  const currentBrand = useMemo(
-    () => (brands || []).find((b) => b.id === brandId) || null,
-    [brands, brandId]
-  );
+  const currentBrand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
 
   return (
     <div className="container">
@@ -168,16 +140,9 @@ export default function VendorPage() {
         <>
           <div className="card" style={{ padding: 12, marginBottom: 12 }}>
             <label className="input-label">Marca</label>
-            <select
-              className="input"
-              value={brandId || ""}
-              onChange={(e) => setBrandId(e.target.value)}
-              aria-label="Seleccionar marca"
-            >
+            <select className="input" value={brandId || ""} onChange={(e) => setBrandId(e.target.value)} aria-label="Seleccionar marca">
               {brands.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name} — /marcas/{b.slug}
-                </option>
+                <option key={b.id} value={b.id}>{b.name} — /marcas/{b.slug}</option>
               ))}
             </select>
           </div>
@@ -195,7 +160,7 @@ export default function VendorPage() {
   );
 }
 
-/** ===== Perfil de marca (edición rápida) ===== */
+/** ===== Perfil de marca ===== */
 function BrandProfileEditor({ b }) {
   const [saving, setSaving] = useState(false);
   async function update(partial) {
@@ -410,7 +375,7 @@ function ProductCrud({ brand }) {
         <input className="input" placeholder="Buscar por nombre" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
-      {/* Tabla productos */}
+      {/* Lista */}
       <div className="card" style={{ marginTop: 8, padding: 0, overflowX: "auto" }}>
         {!list ? (
           <div className="skel" style={{ height: 160 }} />
@@ -478,7 +443,6 @@ function ProductCrud({ brand }) {
   );
 }
 
-/** ===== Pedidos ===== */
 function BrandOrders({ brand }) {
   const [orders, setOrders] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -511,10 +475,9 @@ function BrandOrders({ brand }) {
       setLoading(false);
     }
   }
-
   useEffect(() => { refresh(); }, [brand.id]);
 
-  async function exportOrdersCSV() {
+  function exportCSV() {
     if (!orders?.length) return;
     const rows = orders.map((o) => ({
       order_id: o.id,
@@ -527,45 +490,13 @@ function BrandOrders({ brand }) {
     downloadCSV(`pedidos-${brand.slug}.csv`, rows);
   }
 
-  async function exportItemsCSV() {
-    try {
-      const { data, error } = await supabase
-        .from("order_items")
-        .select(`
-          order_id,
-          qty,
-          unit_price,
-          created_at,
-          orders!inner(id, brand_id, created_at, payment_method, status, total),
-          products!inner(id, name)
-        `)
-        .eq("orders.brand_id", brand.id)
-        .order("order_id", { ascending: false });
-      if (error) throw error;
-      const rows = (data || []).map((it) => ({
-        order_id: it.order_id,
-        fecha_pedido: fmtDate(it.orders?.created_at),
-        producto: it.products?.name || it.product_id,
-        qty: it.qty,
-        unit_price: it.unit_price,
-        metodo: it.orders?.payment_method,
-        estado: it.orders?.status,
-      }));
-      if (!rows.length) return;
-      downloadCSV(`items-${brand.slug}.csv`, rows);
-    } catch (e) {
-      alert(e.message || "No se pudieron exportar los items.");
-    }
-  }
-
   return (
     <section className="card" style={{ padding: 16, marginTop: 12 }}>
       <div className="row" style={{ alignItems: "center" }}>
         <h2 style={{ margin: 0 }}>Pedidos</h2>
         <div style={{ flex: 1 }} />
         <button className="btn ghost" onClick={refresh}>Refrescar</button>
-        <button className="btn ghost" onClick={exportOrdersCSV}>Exportar CSV (pedidos)</button>
-        <button className="btn ghost" onClick={exportItemsCSV}>Exportar CSV (items)</button>
+        <button className="btn ghost" onClick={exportCSV}>Exportar CSV</button>
       </div>
 
       {errorText ? <div className="card" style={{ padding: 12, border: "1px solid #a33", marginTop: 8 }}>{errorText}</div> : null}
@@ -607,3 +538,6 @@ function BrandOrders({ brand }) {
     </section>
   );
 }
+
+function VendorPage() { return <VendorInner />; }
+export default dynamic(() => Promise.resolve(VendorPage), { ssr: false });
