@@ -10,29 +10,6 @@ const fmtMoney = (n) => `$ ${Number(n || 0).toLocaleString("es-AR")}`;
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("es-AR") : "—");
 const CATS = ["Remera","Pantalon","Buzo","Campera","Gorra","Otros"];
 
-function downloadCSV(filename, rows) {
-  if (typeof window === "undefined") return;
-  if (!rows?.length) return;
-  const headers = Object.keys(rows[0]);
-  const csv = [
-    headers.join(","),
-    ...rows.map((r) =>
-      headers.map((h) => {
-        const v = r[h] ?? "";
-        const s = String(v).replace(/"/g, '""');
-        return /[",\n]/.test(s) ? `"${s}"` : s;
-      }).join(",")
-    ),
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function VendorInner() {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
@@ -45,8 +22,8 @@ function VendorInner() {
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
-        const s = data?.session ?? null;
         if (!alive) return;
+        const s = data?.session ?? null;
         setSession(s);
         if (s?.user?.id) {
           const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", s.user.id).maybeSingle();
@@ -160,7 +137,6 @@ function VendorInner() {
   );
 }
 
-/** ===== Perfil de marca ===== */
 function BrandProfileEditor({ b }) {
   const [saving, setSaving] = useState(false);
   async function update(partial) {
@@ -216,7 +192,7 @@ function BrandProfileEditor({ b }) {
   );
 }
 
-/** ===== CRUD de productos ===== */
+/** ===== CRUD de productos (idéntico al anterior) ===== */
 function ProductCrud({ brand }) {
   const [products, setProducts] = useState(null);
   const [q, setQ] = useState("");
@@ -351,7 +327,6 @@ function ProductCrud({ brand }) {
         <Link href={`/marcas/${brand.slug}`} className="btn ghost" target="_blank">Ver público</Link>
       </div>
 
-      {/* Crear producto */}
       <form onSubmit={createProduct} className="grid grid-3" style={{ gap: 8, marginTop: 8 }}>
         <input name="name" className="input" placeholder="Nombre *" />
         <input name="price" className="input" type="number" step="0.01" placeholder="Precio *" />
@@ -366,7 +341,6 @@ function ProductCrud({ brand }) {
         </div>
       </form>
 
-      {/* Filtros */}
       <div className="row" style={{ gap: 8, marginTop: 8 }}>
         <select className="input" value={cat} onChange={(e) => setCat(e.target.value)} style={{ width: 220 }}>
           <option value="">Todas las subcategorías</option>
@@ -375,7 +349,6 @@ function ProductCrud({ brand }) {
         <input className="input" placeholder="Buscar por nombre" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
-      {/* Lista */}
       <div className="card" style={{ marginTop: 8, padding: 0, overflowX: "auto" }}>
         {!list ? (
           <div className="skel" style={{ height: 160 }} />
@@ -477,6 +450,28 @@ function BrandOrders({ brand }) {
   }
   useEffect(() => { refresh(); }, [brand.id]);
 
+  function downloadCSV(filename, rows) {
+    if (!rows?.length) return;
+    const headers = Object.keys(rows[0]);
+    const csv = [
+      headers.join(","),
+      ...rows.map((r) =>
+        headers.map((h) => {
+          const v = r[h] ?? "";
+          const s = String(v).replace(/"/g, '""');
+          return /[",\n]/.test(s) ? `"${s}"` : s;
+        }).join(",")
+      ),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function exportCSV() {
     if (!orders?.length) return;
     const rows = orders.map((o) => ({
@@ -539,5 +534,4 @@ function BrandOrders({ brand }) {
   );
 }
 
-function VendorPage() { return <VendorInner />; }
-export default dynamic(() => Promise.resolve(VendorPage), { ssr: false });
+export default dynamic(() => Promise.resolve(VendorInner), { ssr: false });
