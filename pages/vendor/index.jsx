@@ -379,7 +379,7 @@ function ProductCrud({ brand }) {
   }
 
   return (
-    <section className="card" style={{ padding: 16, margin-bottom: 12, marginBottom: 12 }}>
+    <section className="card" style={{ padding: 16, marginBottom: 12 }}>
       <div className="row" style={{ alignItems: "center" }}>
         <h2 style={{ margin: 0 }}>Catálogo</h2>
         <div style={{ flex: 1 }} />
