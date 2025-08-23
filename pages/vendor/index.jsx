@@ -1,13 +1,13 @@
 // pages/vendor/index.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import Image from "next/image";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
-// Utilidades simples
 const fmtMoney = (n) => `$ ${Number(n || 0).toLocaleString("es-AR")}`;
 const fmtDate = (iso) => new Date(iso).toLocaleString("es-AR");
+const CATS = ["Remera","Pantalon","Buzo","Campera","Gorra","Otros"];
 
 function downloadCSV(filename, rows) {
   if (!rows?.length) return;
@@ -37,10 +37,10 @@ export default function VendorPage() {
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
   const [brands, setBrands] = useState(null);
-  const [savingId, setSavingId] = useState(null);
+  const [brandId, setBrandId] = useState(null);
   const [uiError, setUiError] = useState("");
 
-  // Cargar sesión + rol
+  // Sesión y rol
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -69,46 +69,36 @@ export default function VendorPage() {
             .eq("user_id", s.user.id)
             .maybeSingle();
           setRole(prof?.role ?? null);
-        } else {
-          setRole(null);
-        }
+        } else setRole(null);
       })();
     });
-    return () => {
-      alive = false;
-      sub?.subscription?.unsubscribe?.();
-    };
+    return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // Cargar marcas donde soy vendor (o todas si admin)
+  // Cargar brands del vendor (o todas si admin)
   useEffect(() => {
     if (!session?.user?.id) return;
     (async () => {
       try {
         setUiError("");
-        // Traer links brand_users
-        const { data: links, error: e1 } = await supabase
-          .from("brand_users")
-          .select("brand_id")
-          .eq("user_id", session.user.id);
-        if (e1) throw e1;
+        const { data: links } = await supabase.from("brand_users").select("brand_id").eq("user_id", session.user.id);
         const ids = (links || []).map((l) => l.brand_id);
-
-        // Si admin, permitir ver todas
-        let brandQuery = supabase
+        let q = supabase
           .from("brands")
-          .select("id,name,slug,description,instagram_url,logo_url,color,active,deleted_at");
+          .select("id,name,slug,description,instagram_url,logo_url,color,active,deleted_at")
+          .order("name");
         if (role !== "admin") {
-          if (!ids.length) return setBrands([]);
-          brandQuery = brandQuery.in("id", ids);
+          if (!ids.length) { setBrands([]); return; }
+          q = q.in("id", ids);
         }
-        const { data: bs, error: e2 } = await brandQuery;
-        if (e2) throw e2;
-        setBrands(bs || []);
-      } catch (err) {
-        console.error(err);
-        setUiError("No se pudieron cargar tus marcas.");
+        const { data, error } = await q;
+        if (error) throw error;
+        const list = data || [];
+        setBrands(list);
+        if (!brandId && list.length) setBrandId(list[0].id);
+      } catch (e) {
         setBrands([]);
+        setUiError(e.message || "No se pudieron cargar marcas.");
       }
     })();
   }, [session?.user?.id, role]);
@@ -136,109 +126,7 @@ export default function VendorPage() {
     );
   }
 
-  async function uploadLogo(brand, file) {
-    if (!file) return null;
-    const ext = file.name.split(".").pop()?.toLowerCase() || "png";
-    const path = `${brand.id}/${Date.now()}.${ext}`;
-    const { error: upErr } = await supabase.storage.from("brand-logos").upload(path, file, {
-      cacheControl: "3600",
-      upsert: false,
-      contentType: file.type || "image/png",
-    });
-    if (upErr) throw upErr;
-    const { data } = supabase.storage.from("brand-logos").getPublicUrl(path);
-    return data?.publicUrl || null;
-  }
-
-  async function saveBrand(b, partial) {
-    try {
-      setUiError("");
-      setSavingId(b.id);
-      const payload = {
-        description: partial.description ?? b.description ?? null,
-        instagram_url: partial.instagram_url ?? b.instagram_url ?? null,
-        logo_url: partial.logo_url ?? b.logo_url ?? null,
-        color: partial.color ?? b.color ?? null,
-      };
-      const { error } = await supabase.from("brands").update(payload).eq("id", b.id);
-      if (error) throw error;
-      setBrands((prev) => prev.map((x) => (x.id === b.id ? { ...x, ...payload } : x)));
-    } catch (e) {
-      setUiError(e.message || "No se pudo guardar la marca.");
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  // Traer pedidos por brand
-  async function loadOrders(brandId) {
-    // pedidos + conteo de items (join simple)
-    const { data, error } = await supabase
-      .from("orders")
-      .select("id, created_at, total, payment_method, status, order_items(count)")
-      .eq("brand_id", brandId)
-      .order("created_at", { ascending: false });
-    if (error) throw error;
-    return (data || []).map((o) => ({
-      id: o.id,
-      created_at: o.created_at,
-      total: o.total,
-      payment_method: o.payment_method,
-      status: o.status,
-      items_count: Array.isArray(o.order_items) && o.order_items[0]?.count != null ? o.order_items[0].count : 0,
-    }));
-  }
-
-  async function exportOrdersCSV(brand) {
-    try {
-      const orders = await loadOrders(brand.id);
-      if (!orders.length) return;
-      const rows = orders.map((o) => ({
-        order_id: o.id,
-        fecha: fmtDate(o.created_at),
-        total: o.total,
-        payment_method: o.payment_method,
-        status: o.status,
-        items: o.items_count,
-      }));
-      downloadCSV(`pedidos-${brand.slug}.csv`, rows);
-    } catch (e) {
-      setUiError(e.message || "No se pudieron exportar los pedidos.");
-    }
-  }
-
-  async function exportOrderItemsCSV(brand) {
-    try {
-      // Traigo todos los pedidos y luego sus items en un solo SELECT con join
-      const { data, error } = await supabase
-        .from("order_items")
-        .select(`
-          order_id,
-          qty,
-          unit_price,
-          created_at,
-          orders!inner(id, brand_id, created_at, payment_method, status, total),
-          products!inner(id, name)
-        `)
-        .eq("orders.brand_id", brand.id)
-        .order("order_id", { ascending: false });
-      if (error) throw error;
-
-      const rows = (data || []).map((it) => ({
-        order_id: it.order_id,
-        fecha_pedido: fmtDate(it.orders?.created_at),
-        producto: it.products?.name || it.product_id,
-        qty: it.qty,
-        unit_price: it.unit_price,
-        payment_method: it.orders?.payment_method,
-        status: it.orders?.status,
-      }));
-      if (!rows.length) return;
-      downloadCSV(`items-${brand.slug}.csv`, rows);
-    } catch (e) {
-      setUiError(e.message || "No se pudieron exportar los items.");
-    }
-  }
+  const currentBrand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
 
   return (
     <div className="container">
@@ -255,35 +143,303 @@ export default function VendorPage() {
       ) : brands.length === 0 ? (
         <div className="card" style={{ padding: 16 }}>No tenés marcas asignadas todavía.</div>
       ) : (
-        <div className="grid grid-2">
-          {brands.map((b) => (
-            <BrandEditorCard
-              key={b.id}
-              brand={b}
-              savingId={savingId}
-              onSave={saveBrand}
-              onUploadLogo={uploadLogo}
-              onExportOrders={() => exportOrdersCSV(b)}
-              onExportItems={() => exportOrderItemsCSV(b)}
-            />
-          ))}
-        </div>
+        <>
+          {/* Selector de marca */}
+          <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+            <label className="input-label">Marca</label>
+            <select className="input" value={brandId || ""} onChange={(e) => setBrandId(e.target.value)}>
+              {brands.map((b) => (
+                <option key={b.id} value={b.id}>{b.name} — /marcas/{b.slug}</option>
+              ))}
+            </select>
+          </div>
+
+          {currentBrand ? (
+            <>
+              <BrandProfileEditor b={currentBrand} />
+              <ProductCrud brand={currentBrand} />
+              <BrandOrders brand={currentBrand} />
+            </>
+          ) : null}
+        </>
       )}
     </div>
   );
 }
 
-function BrandEditorCard({ brand: b, savingId, onSave, onUploadLogo, onExportOrders, onExportItems }) {
-  const [orders, setOrders] = useState(null);
-  const [loadingOrders, setLoadingOrders] = useState(false);
+/** ========== Perfil de marca (edición rápida) ========== */
+function BrandProfileEditor({ b }) {
+  const [saving, setSaving] = useState(false);
+  async function update(partial) {
+    setSaving(true);
+    const { error } = await supabase.from("brands").update(partial).eq("id", b.id);
+    setSaving(false);
+    if (error) alert(error.message || "No se pudo guardar");
+  }
+  async function handleLogo(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setSaving(true);
+      const ext = file.name.split(".").pop()?.toLowerCase() || "png";
+      const path = `${b.id}/${Date.now()}.${ext}`;
+      const up = await supabase.storage.from("brand-logos").upload(path, file, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: file.type || "image/png",
+      });
+      if (up.error) throw up.error;
+      const { data } = supabase.storage.from("brand-logos").getPublicUrl(path);
+      const publicUrl = data?.publicUrl || null;
+      await update({ logo_url: publicUrl });
+    } catch (e2) {
+      alert(e2.message || "No se pudo subir el logo.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
-  async function refreshOrders() {
-    setLoadingOrders(true);
+  return (
+    <section className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <h2 style={{ marginTop: 0 }}>Perfil de {b.name}</h2>
+      <div className="grid grid-2" style={{ gap: 8 }}>
+        <div>
+          <label className="input-label">Descripción</label>
+          <textarea className="input" rows={3} defaultValue={b.description || ""} onBlur={(e) => update({ description: e.target.value })} />
+        </div>
+        <div>
+          <label className="input-label">Instagram (URL)</label>
+          <input className="input" type="url" defaultValue={b.instagram_url || ""} onBlur={(e) => update({ instagram_url: e.target.value || null })} />
+          <label className="input-label" style={{ marginTop: 8 }}>Logo</label>
+          <input type="file" className="input" accept="image/*" onChange={handleLogo} disabled={saving} />
+        </div>
+      </div>
+      {saving ? <div className="badge" style={{ marginTop: 8 }}>Guardando…</div> : null}
+    </section>
+  );
+}
+
+/** ========== CRUD de productos ========== */
+function ProductCrud({ brand }) {
+  const [products, setProducts] = useState(null);
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("");
+  const [savingId, setSavingId] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  async function loadProducts() {
+    const { data, error } = await supabase
+      .from("products")
+      .select("id,name,price,image_url,category,subcategory,active,deleted_at,created_at")
+      .eq("brand_id", brand.id)
+      .order("created_at", { ascending: false });
+    if (error) {
+      setProducts([]);
+      return;
+    }
+    setProducts(data || []);
+  }
+  useEffect(() => { loadProducts(); }, [brand.id]);
+
+  const list = useMemo(() => {
+    if (!products) return null;
+    let arr = products;
+    if (cat) arr = arr.filter((p) => (p.subcategory || p.category || "").toLowerCase() === cat.toLowerCase());
+    if (q.trim()) {
+      const t = q.trim().toLowerCase();
+      arr = arr.filter((p) => (p.name || "").toLowerCase().includes(t));
+    }
+    return arr;
+  }, [products, q, cat]);
+
+  async function uploadImage(file) {
+    const ext = file.name.split(".").pop()?.toLowerCase() || "png";
+    const path = `${brand.id}/${Date.now()}.${ext}`;
+    const up = await supabase.storage.from("product-images").upload(path, file, {
+      cacheControl: "3600",
+      upsert: false,
+      contentType: file.type || "image/png",
+    });
+    if (up.error) throw up.error;
+    const { data } = supabase.storage.from("product-images").getPublicUrl(path);
+    return data?.publicUrl || null;
+  }
+
+  async function createProduct(e) {
+    e.preventDefault();
+    try {
+      setCreating(true);
+      const form = new FormData(e.currentTarget);
+      const payload = {
+        brand_id: brand.id,
+        name: (form.get("name") || "").toString().trim(),
+        price: Number(form.get("price") || 0),
+        category: (form.get("category") || "").toString().trim() || null,
+        subcategory: (form.get("subcategory") || "").toString().trim() || null,
+        active: true,
+      };
+      if (!payload.name) { alert("Nombre requerido"); return; }
+      // Imagen (opcional)
+      const file = form.get("image");
+      if (file && file.size) {
+        payload.image_url = await uploadImage(file);
+      }
+      const { error } = await supabase.from("products").insert(payload);
+      if (error) throw error;
+      e.currentTarget.reset();
+      await loadProducts();
+      alert("Producto creado");
+    } catch (e2) {
+      alert(e2.message || "No se pudo crear el producto.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function saveProduct(p, partial) {
+    setSavingId(p.id);
+    const { error } = await supabase.from("products").update(partial).eq("id", p.id);
+    setSavingId(null);
+    if (error) alert(error.message || "No se pudo guardar");
+    else loadProducts();
+  }
+
+  async function handleUploadImage(p, file) {
+    try {
+      setSavingId(p.id);
+      const publicUrl = await uploadImage(file);
+      await saveProduct(p, { image_url: publicUrl });
+    } catch (e) {
+      alert(e.message || "No se pudo subir la imagen");
+      setSavingId(null);
+    }
+  }
+
+  async function softDelete(p) {
+    if (!confirm(`¿Eliminar (soft) el producto “${p.name}”?`)) return;
+    const { error } = await supabase.from("products").update({ deleted_at: new Date().toISOString(), active: false }).eq("id", p.id);
+    if (error) alert(error.message || "No se pudo eliminar");
+    else loadProducts();
+  }
+
+  async function restore(p) {
+    const { error } = await supabase.from("products").update({ deleted_at: null }).eq("id", p.id);
+    if (error) alert(error.message || "No se pudo restaurar");
+    else loadProducts();
+  }
+
+  return (
+    <section className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <div className="row" style={{ alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>Catálogo</h2>
+        <div style={{ flex: 1 }} />
+        <Link href={`/marcas/${brand.slug}`} className="btn ghost" target="_blank">Ver público</Link>
+      </div>
+
+      {/* Crear producto */}
+      <form onSubmit={createProduct} className="grid grid-3" style={{ gap: 8, marginTop: 8 }}>
+        <input name="name" className="input" placeholder="Nombre *" />
+        <input name="price" className="input" type="number" step="0.01" placeholder="Precio *" />
+        <select name="subcategory" className="input" defaultValue="">
+          <option value="">Subcategoría (opcional)</option>
+          {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input name="category" className="input" placeholder="Categoría (opcional)" />
+        <input name="image" className="input" type="file" accept="image/*" />
+        <div style={{ gridColumn: "1 / -1", textAlign: "right" }}>
+          <button className="btn" type="submit" disabled={creating}>Crear</button>
+        </div>
+      </form>
+
+      {/* Filtros */}
+      <div className="row" style={{ gap: 8, marginTop: 8 }}>
+        <select className="input" value={cat} onChange={(e) => setCat(e.target.value)} style={{ width: 220 }}>
+          <option value="">Todas las subcategorías</option>
+          {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input className="input" placeholder="Buscar por nombre" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+
+      {/* Tabla productos */}
+      <div className="card" style={{ marginTop: 8, padding: 0, overflowX: "auto" }}>
+        {!list ? (
+          <div className="skel" style={{ height: 160 }} />
+        ) : list.length === 0 ? (
+          <div style={{ padding: 16 }}>No hay productos.</div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Img</th>
+                <th>Nombre</th>
+                <th>Subcat</th>
+                <th>Precio</th>
+                <th>Activo</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    <div style={{ width: 56, height: 56, position: "relative", overflow: "hidden", borderRadius: 8, background: "#0E1012" }}>
+                      {p.image_url && <Image src={p.image_url} alt={p.name} fill sizes="56px" style={{ objectFit: "cover" }} unoptimized />}
+                    </div>
+                  </td>
+                  <td>
+                    <input className="input" defaultValue={p.name} onBlur={(e) => saveProduct(p, { name: e.target.value })} />
+                  </td>
+                  <td>
+                    <select className="input" defaultValue={p.subcategory || ""} onChange={(e) => saveProduct(p, { subcategory: e.target.value || null })}>
+                      <option value="">—</option>
+                      {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <input className="input" type="number" step="0.01" defaultValue={p.price ?? 0} onBlur={(e) => saveProduct(p, { price: Number(e.target.value || 0) })} />
+                  </td>
+                  <td>
+                    <label className="chip">
+                      <input type="checkbox" checked={!!p.active} onChange={() => saveProduct(p, { active: !p.active })} /> activo
+                    </label>
+                  </td>
+                  <td>{p.deleted_at ? "Eliminado" : "OK"}</td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    <label className="btn ghost" style={{ cursor: "pointer" }}>
+                      Cambiar imagen
+                      <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && handleUploadImage(p, e.target.files[0])} />
+                    </label>
+                    {!p.deleted_at ? (
+                      <button className="btn danger" onClick={() => softDelete(p)}>Eliminar</button>
+                    ) : (
+                      <button className="btn" onClick={() => restore(p)}>Restaurar</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {savingId ? <div className="badge" style={{ marginTop: 8 }}>Guardando…</div> : null}
+    </section>
+  );
+}
+
+/** ========== Pedidos ========== */
+function BrandOrders({ brand }) {
+  const [orders, setOrders] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
     try {
       const { data, error } = await supabase
         .from("orders")
         .select("id, created_at, total, payment_method, status, order_items(count)")
-        .eq("brand_id", b.id)
+        .eq("brand_id", brand.id)
         .order("created_at", { ascending: false });
       if (error) throw error;
       setOrders(
@@ -296,129 +452,99 @@ function BrandEditorCard({ brand: b, savingId, onSave, onUploadLogo, onExportOrd
           items_count: Array.isArray(o.order_items) && o.order_items[0]?.count != null ? o.order_items[0].count : 0,
         }))
       );
-    } catch (e) {
+    } catch {
       setOrders([]);
     } finally {
-      setLoadingOrders(false);
+      setLoading(false);
     }
   }
 
-  useEffect(() => {
-    // Cargar al abrir
-    refreshOrders();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [b.id]);
+  useEffect(() => { refresh(); }, [brand.id]);
+
+  async function exportOrdersCSV() {
+    if (!orders?.length) return;
+    const rows = orders.map((o) => ({
+      order_id: o.id,
+      fecha: fmtDate(o.created_at),
+      total: o.total,
+      metodo: o.payment_method,
+      estado: o.status,
+      items: o.items_count,
+    }));
+    downloadCSV(`pedidos-${brand.slug}.csv`, rows);
+  }
+
+  async function exportItemsCSV() {
+    const { data, error } = await supabase
+      .from("order_items")
+      .select(`
+        order_id,
+        qty,
+        unit_price,
+        created_at,
+        orders!inner(id, brand_id, created_at, payment_method, status, total),
+        products!inner(id, name)
+      `)
+      .eq("orders.brand_id", brand.id)
+      .order("order_id", { ascending: false });
+    if (error) return;
+    const rows = (data || []).map((it) => ({
+      order_id: it.order_id,
+      fecha_pedido: fmtDate(it.orders?.created_at),
+      producto: it.products?.name || it.product_id,
+      qty: it.qty,
+      unit_price: it.unit_price,
+      metodo: it.orders?.payment_method,
+      estado: it.orders?.status,
+    }));
+    if (!rows.length) return;
+    downloadCSV(`items-${brand.slug}.csv`, rows);
+  }
 
   return (
-    <article className="card" style={{ padding: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ width: 64, height: 64, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,.08)", position: "relative", background: "#0E1012" }}>
-          {b.logo_url && (
-            <Image src={b.logo_url} alt={`${b.name} logo`} fill sizes="64px" style={{ objectFit: "cover" }} unoptimized />
-          )}
-        </div>
-        <div style={{ flex: 1 }}>
-          <strong>{b.name}</strong>
-          <div style={{ color: "var(--text-dim)" }}>/marcas/{b.slug}</div>
-        </div>
-        <a href={`/marcas/${b.slug}`} target="_blank" rel="noreferrer" className="btn ghost">Ver</a>
+    <section className="card" style={{ padding: 16, marginTop: 12 }}>
+      <div className="row" style={{ alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>Pedidos</h2>
+        <div style={{ flex: 1 }} />
+        <button className="btn ghost" onClick={refresh}>Refrescar</button>
+        <button className="btn ghost" onClick={exportOrdersCSV}>Exportar CSV (pedidos)</button>
+        <button className="btn ghost" onClick={exportItemsCSV}>Exportar CSV (items)</button>
       </div>
 
-      {/* Edición rápida de perfil de marca */}
-      <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-        <label className="input-label">Descripción</label>
-        <textarea
-          className="input"
-          rows={3}
-          defaultValue={b.description || ""}
-          onBlur={(e) => onSave(b, { description: e.target.value })}
-        />
-
-        <label className="input-label">Instagram (URL)</label>
-        <input
-          className="input"
-          type="url"
-          defaultValue={b.instagram_url || ""}
-          placeholder="https://instagram.com/mi_marca"
-          onBlur={(e) => onSave(b, { instagram_url: e.target.value })}
-        />
-
-        <label className="input-label">Color (hex opcional)</label>
-        <input
-          className="input"
-          type="text"
-          defaultValue={b.color || ""}
-          placeholder="#111111"
-          onBlur={(e) => onSave(b, { color: e.target.value })}
-        />
-
-        <label className="input-label">Logo (PNG/JPG)</label>
-        <input
-          className="input"
-          type="file"
-          accept="image/*"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            try {
-              const publicUrl = await onUploadLogo(b, file);
-              await onSave(b, { logo_url: publicUrl });
-            } catch (err) {
-              alert(err.message || "No se pudo subir el logo.");
-            }
-          }}
-        />
-      </div>
-
-      {/* Pedidos */}
-      <div style={{ marginTop: 16 }}>
-        <div className="row" style={{ alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Pedidos</h3>
-          <div style={{ flex: 1 }} />
-          <button className="btn ghost" onClick={refreshOrders} aria-label="Refrescar pedidos">Refrescar</button>
-          <button className="btn ghost" onClick={onExportOrders} aria-label="Exportar CSV pedidos">Exportar CSV (pedidos)</button>
-          <button className="btn ghost" onClick={onExportItems} aria-label="Exportar CSV items">Exportar CSV (items)</button>
-        </div>
-
-        <div className="card" style={{ marginTop: 8, padding: 0, overflowX: "auto" }}>
-          {loadingOrders ? (
-            <div className="skel" style={{ height: 120 }} />
-          ) : !orders ? (
-            <div style={{ padding: 16 }}>Cargando...</div>
-          ) : orders.length === 0 ? (
-            <div style={{ padding: 16 }}>No hay pedidos todavía.</div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Fecha</th>
-                  <th>Pedido</th>
-                  <th>Items</th>
-                  <th>Total</th>
-                  <th>Método</th>
-                  <th>Estado</th>
+      <div className="card" style={{ marginTop: 8, padding: 0, overflowX: "auto" }}>
+        {loading ? (
+          <div className="skel" style={{ height: 120 }} />
+        ) : !orders ? (
+          <div style={{ padding: 16 }}>Cargando…</div>
+        ) : orders.length === 0 ? (
+          <div style={{ padding: 16 }}>No hay pedidos todavía.</div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Pedido</th>
+                <th>Items</th>
+                <th>Total</th>
+                <th>Método</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((o) => (
+                <tr key={o.id}>
+                  <td>{fmtDate(o.created_at)}</td>
+                  <td style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,'Liberation Mono','Courier New',monospace" }}>{o.id.slice(0,8)}…</td>
+                  <td>{o.items_count}</td>
+                  <td>{fmtMoney(o.total)}</td>
+                  <td>{o.payment_method}</td>
+                  <td>{o.status}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {orders.map((o) => (
-                  <tr key={o.id}>
-                    <td>{fmtDate(o.created_at)}</td>
-                    <td style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>{o.id.slice(0, 8)}…</td>
-                    <td>{o.items_count}</td>
-                    <td>{fmtMoney(o.total)}</td>
-                    <td>{o.payment_method}</td>
-                    <td>{o.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
-
-      <div style={{ marginTop: 12 }}>
-        {savingId === b.id ? <span className="badge">Guardando…</span> : null}
-      </div>
-    </article>
+    </section>
   );
 }
