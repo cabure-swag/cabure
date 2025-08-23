@@ -6,10 +6,11 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
 const fmtMoney = (n) => `$ ${Number(n || 0).toLocaleString("es-AR")}`;
-const fmtDate = (iso) => new Date(iso).toLocaleString("es-AR");
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("es-AR") : "—");
 const CATS = ["Remera","Pantalon","Buzo","Campera","Gorra","Otros"];
 
 function downloadCSV(filename, rows) {
+  if (typeof window === "undefined") return; // SSR guard
   if (!rows?.length) return;
   const headers = Object.keys(rows[0]);
   const csv = [
@@ -40,23 +41,27 @@ export default function VendorPage() {
   const [brandId, setBrandId] = useState(null);
   const [uiError, setUiError] = useState("");
 
-  // Sesión y rol
+  // Sesión + rol
   useEffect(() => {
     let alive = true;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      const s = data?.session ?? null;
-      if (!alive) return;
-      setSession(s);
-      if (s?.user?.id) {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", s.user.id)
-          .maybeSingle();
-        setRole(prof?.role ?? null);
-      } else {
-        setRole(null);
+      try {
+        const { data } = await supabase.auth.getSession();
+        const s = data?.session ?? null;
+        if (!alive) return;
+        setSession(s);
+        if (s?.user?.id) {
+          const { data: prof } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("user_id", s.user.id)
+            .maybeSingle();
+          setRole(prof?.role ?? null);
+        } else {
+          setRole(null);
+        }
+      } catch (e) {
+        setUiError("No se pudo cargar la sesión.");
       }
     })();
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
@@ -75,28 +80,40 @@ export default function VendorPage() {
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // Cargar brands del vendor (o todas si admin)
+  // Marcas del vendor (o todas si admin)
   useEffect(() => {
     if (!session?.user?.id) return;
     (async () => {
       try {
         setUiError("");
-        const { data: links } = await supabase.from("brand_users").select("brand_id").eq("user_id", session.user.id);
+        const { data: links, error: e1 } = await supabase
+          .from("brand_users")
+          .select("brand_id")
+          .eq("user_id", session.user.id);
+        if (e1) throw e1;
         const ids = (links || []).map((l) => l.brand_id);
+
         let q = supabase
           .from("brands")
           .select("id,name,slug,description,instagram_url,logo_url,color,active,deleted_at")
           .order("name");
+
         if (role !== "admin") {
-          if (!ids.length) { setBrands([]); return; }
+          if (!ids.length) {
+            setBrands([]);
+            return;
+          }
           q = q.in("id", ids);
         }
+
         const { data, error } = await q;
         if (error) throw error;
+
         const list = data || [];
         setBrands(list);
         if (!brandId && list.length) setBrandId(list[0].id);
       } catch (e) {
+        console.error(e);
         setBrands([]);
         setUiError(e.message || "No se pudieron cargar marcas.");
       }
@@ -106,8 +123,9 @@ export default function VendorPage() {
   if (!session) {
     return (
       <div className="container">
+        <Head><title>Vendor — CABURE.STORE</title></Head>
         <div className="card" style={{ padding: 24 }}>
-          <h2>Vendor</h2>
+          <h2>Panel de Vendedor</h2>
           <p>Necesitás iniciar sesión.</p>
           <Link href="/soporte" className="btn">Iniciar sesión</Link>
         </div>
@@ -117,6 +135,7 @@ export default function VendorPage() {
   if (role !== "vendor" && role !== "admin") {
     return (
       <div className="container">
+        <Head><title>Vendor — CABURE.STORE</title></Head>
         <div className="card" style={{ padding: 24 }}>
           <h2>Sin permiso</h2>
           <p>Tu usuario no tiene rol de vendedor.</p>
@@ -126,7 +145,10 @@ export default function VendorPage() {
     );
   }
 
-  const currentBrand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
+  const currentBrand = useMemo(
+    () => (brands || []).find((b) => b.id === brandId) || null,
+    [brands, brandId]
+  );
 
   return (
     <div className="container">
@@ -144,12 +166,18 @@ export default function VendorPage() {
         <div className="card" style={{ padding: 16 }}>No tenés marcas asignadas todavía.</div>
       ) : (
         <>
-          {/* Selector de marca */}
           <div className="card" style={{ padding: 12, marginBottom: 12 }}>
             <label className="input-label">Marca</label>
-            <select className="input" value={brandId || ""} onChange={(e) => setBrandId(e.target.value)}>
+            <select
+              className="input"
+              value={brandId || ""}
+              onChange={(e) => setBrandId(e.target.value)}
+              aria-label="Seleccionar marca"
+            >
               {brands.map((b) => (
-                <option key={b.id} value={b.id}>{b.name} — /marcas/{b.slug}</option>
+                <option key={b.id} value={b.id}>
+                  {b.name} — /marcas/{b.slug}
+                </option>
               ))}
             </select>
           </div>
@@ -167,14 +195,19 @@ export default function VendorPage() {
   );
 }
 
-/** ========== Perfil de marca (edición rápida) ========== */
+/** ===== Perfil de marca (edición rápida) ===== */
 function BrandProfileEditor({ b }) {
   const [saving, setSaving] = useState(false);
   async function update(partial) {
-    setSaving(true);
-    const { error } = await supabase.from("brands").update(partial).eq("id", b.id);
-    setSaving(false);
-    if (error) alert(error.message || "No se pudo guardar");
+    try {
+      setSaving(true);
+      const { error } = await supabase.from("brands").update(partial).eq("id", b.id);
+      if (error) throw error;
+    } catch (e) {
+      alert(e.message || "No se pudo guardar");
+    } finally {
+      setSaving(false);
+    }
   }
   async function handleLogo(e) {
     const file = e.target.files?.[0];
@@ -190,8 +223,7 @@ function BrandProfileEditor({ b }) {
       });
       if (up.error) throw up.error;
       const { data } = supabase.storage.from("brand-logos").getPublicUrl(path);
-      const publicUrl = data?.publicUrl || null;
-      await update({ logo_url: publicUrl });
+      await update({ logo_url: data?.publicUrl || null });
     } catch (e2) {
       alert(e2.message || "No se pudo subir el logo.");
     } finally {
@@ -219,7 +251,7 @@ function BrandProfileEditor({ b }) {
   );
 }
 
-/** ========== CRUD de productos ========== */
+/** ===== CRUD de productos ===== */
 function ProductCrud({ brand }) {
   const [products, setProducts] = useState(null);
   const [q, setQ] = useState("");
@@ -228,16 +260,18 @@ function ProductCrud({ brand }) {
   const [creating, setCreating] = useState(false);
 
   async function loadProducts() {
-    const { data, error } = await supabase
-      .from("products")
-      .select("id,name,price,image_url,category,subcategory,active,deleted_at,created_at")
-      .eq("brand_id", brand.id)
-      .order("created_at", { ascending: false });
-    if (error) {
+    try {
+      const { data, error } = await supabase
+        .from("products")
+        .select("id,name,price,image_url,category,subcategory,active,deleted_at,created_at")
+        .eq("brand_id", brand.id)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setProducts(data || []);
+    } catch (e) {
       setProducts([]);
-      return;
+      console.error(e);
     }
-    setProducts(data || []);
   }
   useEffect(() => { loadProducts(); }, [brand.id]);
 
@@ -279,11 +313,8 @@ function ProductCrud({ brand }) {
         active: true,
       };
       if (!payload.name) { alert("Nombre requerido"); return; }
-      // Imagen (opcional)
       const file = form.get("image");
-      if (file && file.size) {
-        payload.image_url = await uploadImage(file);
-      }
+      if (file && file.size) payload.image_url = await uploadImage(file);
       const { error } = await supabase.from("products").insert(payload);
       if (error) throw error;
       e.currentTarget.reset();
@@ -297,11 +328,16 @@ function ProductCrud({ brand }) {
   }
 
   async function saveProduct(p, partial) {
-    setSavingId(p.id);
-    const { error } = await supabase.from("products").update(partial).eq("id", p.id);
-    setSavingId(null);
-    if (error) alert(error.message || "No se pudo guardar");
-    else loadProducts();
+    try {
+      setSavingId(p.id);
+      const { error } = await supabase.from("products").update(partial).eq("id", p.id);
+      if (error) throw error;
+      await loadProducts();
+    } catch (e) {
+      alert(e.message || "No se pudo guardar");
+    } finally {
+      setSavingId(null);
+    }
   }
 
   async function handleUploadImage(p, file) {
@@ -317,19 +353,33 @@ function ProductCrud({ brand }) {
 
   async function softDelete(p) {
     if (!confirm(`¿Eliminar (soft) el producto “${p.name}”?`)) return;
-    const { error } = await supabase.from("products").update({ deleted_at: new Date().toISOString(), active: false }).eq("id", p.id);
-    if (error) alert(error.message || "No se pudo eliminar");
-    else loadProducts();
+    try {
+      const { error } = await supabase
+        .from("products")
+        .update({ deleted_at: new Date().toISOString(), active: false })
+        .eq("id", p.id);
+      if (error) throw error;
+      await loadProducts();
+    } catch (e) {
+      alert(e.message || "No se pudo eliminar");
+    }
   }
 
   async function restore(p) {
-    const { error } = await supabase.from("products").update({ deleted_at: null }).eq("id", p.id);
-    if (error) alert(error.message || "No se pudo restaurar");
-    else loadProducts();
+    try {
+      const { error } = await supabase
+        .from("products")
+        .update({ deleted_at: null })
+        .eq("id", p.id);
+      if (error) throw error;
+      await loadProducts();
+    } catch (e) {
+      alert(e.message || "No se pudo restaurar");
+    }
   }
 
   return (
-    <section className="card" style={{ padding: 16, marginBottom: 12 }}>
+    <section className="card" style={{ padding: 16, margin-bottom: 12, marginBottom: 12 }}>
       <div className="row" style={{ alignItems: "center" }}>
         <h2 style={{ margin: 0 }}>Catálogo</h2>
         <div style={{ flex: 1 }} />
@@ -428,13 +478,15 @@ function ProductCrud({ brand }) {
   );
 }
 
-/** ========== Pedidos ========== */
+/** ===== Pedidos ===== */
 function BrandOrders({ brand }) {
   const [orders, setOrders] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [errorText, setErrorText] = useState("");
 
   async function refresh() {
     setLoading(true);
+    setErrorText("");
     try {
       const { data, error } = await supabase
         .from("orders")
@@ -452,8 +504,9 @@ function BrandOrders({ brand }) {
           items_count: Array.isArray(o.order_items) && o.order_items[0]?.count != null ? o.order_items[0].count : 0,
         }))
       );
-    } catch {
+    } catch (e) {
       setOrders([]);
+      setErrorText(e.message || "No se pudieron cargar los pedidos.");
     } finally {
       setLoading(false);
     }
@@ -475,30 +528,34 @@ function BrandOrders({ brand }) {
   }
 
   async function exportItemsCSV() {
-    const { data, error } = await supabase
-      .from("order_items")
-      .select(`
-        order_id,
-        qty,
-        unit_price,
-        created_at,
-        orders!inner(id, brand_id, created_at, payment_method, status, total),
-        products!inner(id, name)
-      `)
-      .eq("orders.brand_id", brand.id)
-      .order("order_id", { ascending: false });
-    if (error) return;
-    const rows = (data || []).map((it) => ({
-      order_id: it.order_id,
-      fecha_pedido: fmtDate(it.orders?.created_at),
-      producto: it.products?.name || it.product_id,
-      qty: it.qty,
-      unit_price: it.unit_price,
-      metodo: it.orders?.payment_method,
-      estado: it.orders?.status,
-    }));
-    if (!rows.length) return;
-    downloadCSV(`items-${brand.slug}.csv`, rows);
+    try {
+      const { data, error } = await supabase
+        .from("order_items")
+        .select(`
+          order_id,
+          qty,
+          unit_price,
+          created_at,
+          orders!inner(id, brand_id, created_at, payment_method, status, total),
+          products!inner(id, name)
+        `)
+        .eq("orders.brand_id", brand.id)
+        .order("order_id", { ascending: false });
+      if (error) throw error;
+      const rows = (data || []).map((it) => ({
+        order_id: it.order_id,
+        fecha_pedido: fmtDate(it.orders?.created_at),
+        producto: it.products?.name || it.product_id,
+        qty: it.qty,
+        unit_price: it.unit_price,
+        metodo: it.orders?.payment_method,
+        estado: it.orders?.status,
+      }));
+      if (!rows.length) return;
+      downloadCSV(`items-${brand.slug}.csv`, rows);
+    } catch (e) {
+      alert(e.message || "No se pudieron exportar los items.");
+    }
   }
 
   return (
@@ -510,6 +567,8 @@ function BrandOrders({ brand }) {
         <button className="btn ghost" onClick={exportOrdersCSV}>Exportar CSV (pedidos)</button>
         <button className="btn ghost" onClick={exportItemsCSV}>Exportar CSV (items)</button>
       </div>
+
+      {errorText ? <div className="card" style={{ padding: 12, border: "1px solid #a33", marginTop: 8 }}>{errorText}</div> : null}
 
       <div className="card" style={{ marginTop: 8, padding: 0, overflowX: "auto" }}>
         {loading ? (
