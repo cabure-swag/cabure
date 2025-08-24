@@ -1,5 +1,10 @@
+// components/CartSidebar.jsx
 import { useEffect, useMemo, useState } from "react";
-import { readBrandCart, writeBrandCart, clearBrandCart } from "@/utils/brandCart";
+import {
+  readBrandCart,
+  writeBrandCart,
+  clearBrandCart,
+} from "@/utils/brandCart";
 
 export default function CartSidebar({ brandSlug, compact = false }) {
   const [items, setItems] = useState([]);
@@ -17,7 +22,11 @@ export default function CartSidebar({ brandSlug, compact = false }) {
   }, [brandSlug]);
 
   const subtotal = useMemo(
-    () => items.reduce((acc, it) => acc + Number(it.price || 0) * Number(it.qty || 1), 0),
+    () =>
+      items.reduce(
+        (acc, it) => acc + Number(it.price || 0) * Number(it.qty || 1),
+        0
+      ),
     [items]
   );
 
@@ -44,8 +53,8 @@ export default function CartSidebar({ brandSlug, compact = false }) {
       <div className="head">
         <h3>Carrito</h3>
         <div className="spacer" />
-        <button className="btn sm" onClick={() => document.body.classList.toggle("cart-hide")}>
-          {compact ? "Ocultar" : "Cerrar"}
+        <button className="btn sm" onClick={() => {}}>
+          Ocultar
         </button>
       </div>
 
@@ -63,7 +72,9 @@ export default function CartSidebar({ brandSlug, compact = false }) {
                 value={Number(it.qty || 1)}
                 onChange={(e) => setQty(it.id, e.target.value)}
               />
-              <div className="price">${Number(it.price || 0) * Number(it.qty || 1)}</div>
+              <div className="price">
+                ${Number(it.price || 0) * Number(it.qty || 1)}
+              </div>
               <button className="x" aria-label="Eliminar" onClick={() => remove(it.id)}>
                 ×
               </button>
