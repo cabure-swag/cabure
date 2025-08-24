@@ -122,7 +122,7 @@ function VendorInner() {
     try {
       const { data, error } = await supabase
         .from("products")
-        .select("id,brand_id,name,price,image_url,category,subcategory,active,deleted_at,created_at,stock")
+        .select("id,brand_id,name,price,image_url,image_urls,category,subcategory,active,deleted_at,created_at,stock")
         .eq("brand_id", bid)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -255,7 +255,7 @@ function VendorInner() {
             ) : products.length === 0 ? (
               <div style={{ marginTop: 8 }}>Aún no hay productos.</div>
             ) : (
-              <div className="grid grid-3" style={{ gap: 12, marginTop: 12 }}>
+              <div className="grid grid-4" style={{ gap: 12, marginTop: 12 }}>
                 {products.map((p) => (
                   <ProductCard key={p.id} product={p} onChanged={loadProducts} />
                 ))}
@@ -321,6 +321,23 @@ function VendorInner() {
               </div>
             )}
           </section>
+
+          {/* grid 4 por fila responsivo para el vendor */}
+          <style jsx>{`
+            .grid.grid-4 {
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+            }
+            @media (max-width: 1100px) {
+              .grid.grid-4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            }
+            @media (max-width: 800px) {
+              .grid.grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            }
+            @media (max-width: 520px) {
+              .grid.grid-4 { grid-template-columns: 1fr; }
+            }
+          `}</style>
         </>
       )}
     </div>
@@ -342,14 +359,14 @@ function VendorInner() {
   }
 }
 
-// ----- crear producto -----
+// ----- crear producto (con múltiples imágenes) -----
 function CreateProductForm({ brandId, onCancel, onCreated }) {
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [category, setCategory] = useState("");
   const [subcategory, setSubcategory] = useState("");
-  const [stock, setStock] = useState("1"); // DEFAULT = "1"
-  const [imageFile, setImageFile] = useState(null);
+  const [stock, setStock] = useState("1");
+  const [files, setFiles] = useState([]); // múltiples
   const [saving, setSaving] = useState(false);
 
   async function handleSubmit(e) {
@@ -358,25 +375,29 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
     const priceNum = Number(price || 0);
     if (Number.isNaN(priceNum) || priceNum < 0) { alert("Precio inválido"); return; }
 
-    // convertir stock (vacío => 1)
     let stockNum = parseInt(stock === "" ? "1" : stock, 10);
     if (Number.isNaN(stockNum) || stockNum < 0) stockNum = 1;
 
     setSaving(true);
     try {
-      let image_url = null;
-      if (imageFile) {
-        const ext = imageFile.name.split(".").pop()?.toLowerCase() || "jpg";
-        const path = `${brandId}/${Date.now()}-${slugify(name)}.${ext}`;
-        const up = await supabase.storage.from("product-images").upload(path, imageFile, {
+      // subir hasta 5 imágenes
+      const selected = files.slice(0, 5);
+      const urls = [];
+      for (const file of selected) {
+        const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+        const path = `${brandId}/${Date.now()}-${slugify(name)}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const up = await supabase.storage.from("product-images").upload(path, file, {
           cacheControl: "3600",
           upsert: false,
-          contentType: imageFile.type || "image/jpeg",
+          contentType: file.type || "image/jpeg",
         });
         if (up.error) throw up.error;
         const { data } = supabase.storage.from("product-images").getPublicUrl(path);
-        image_url = data?.publicUrl || null;
+        if (data?.publicUrl) urls.push(data.publicUrl);
       }
+
+      const image_urls = urls.length ? urls : null;
+      const image_url = image_urls?.[0] || null;
 
       const payload = {
         brand_id: brandId,
@@ -385,8 +406,9 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
         category: category || null,
         subcategory: subcategory || null,
         image_url,
+        image_urls,
         stock: stockNum,
-        active: stockNum > 0, // con 1 queda activo
+        active: stockNum > 0,
       };
       const { error } = await supabase.from("products").insert(payload);
       if (error) throw error;
@@ -433,22 +455,28 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
             value={stock}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "") { setStock(""); return; } // permitir vacío
+              if (v === "") { setStock(""); return; }
               const n = parseInt(v, 10);
               if (Number.isNaN(n) || n < 0) return;
               setStock(String(n));
             }}
-            onBlur={() => {
-              if (stock === "") setStock("1"); // normalizar a 1
-            }}
+            onBlur={() => { if (stock === "") setStock("1"); }}
           />
         </div>
-        <div>
-          <label className="input-label">Imagen</label>
-          <input className="input" type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} />
-        </div>
         <div style={{ gridColumn: "1 / -1" }}>
-          <ImageBox src={null} alt="preview" ratio="4:3" />
+          <label className="input-label">Imágenes (hasta 5)</label>
+          <input
+            className="input"
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={(e) => setFiles(Array.from(e.target.files || []))}
+          />
+          <div className="grid grid-4" style={{ gap: 8, marginTop: 8 }}>
+            {(files || []).slice(0, 5).map((f, i) => (
+              <ImageBox key={i} src={URL.createObjectURL(f)} alt={`preview-${i}`} ratio="4:3" />
+            ))}
+          </div>
         </div>
         <div style={{ gridColumn: "1 / -1", textAlign: "right" }}>
           <button className="btn" type="submit" disabled={saving}>
@@ -460,19 +488,20 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
   );
 }
 
-// ----- card de producto (editar / activar / eliminar soft) -----
+// ----- card de producto (galería, principal, eliminar imagen, editar campos) -----
 function ProductCard({ product, onChanged }) {
   const [name, setName] = useState(product.name || "");
   const [price, setPrice] = useState(product.price || 0);
   const [category, setCategory] = useState(product.category || "");
   const [subcategory, setSubcategory] = useState(product.subcategory || "");
-  // DEFAULT = "1" si viene null/undefined
   const [stock, setStock] = useState(
     (product.stock === null || product.stock === undefined) ? "1" : String(product.stock)
   );
   const [active, setActive] = useState(!!product.active);
-  const [imageUrl, setImageUrl] = useState(product.image_url || "");
+  const [imageUrls, setImageUrls] = useState(Array.isArray(product.image_urls) ? product.image_urls : (product.image_url ? [product.image_url] : []));
   const [saving, setSaving] = useState(false);
+
+  const primary = imageUrls[0] || null;
 
   useEffect(() => {
     setName(product.name || "");
@@ -481,11 +510,11 @@ function ProductCard({ product, onChanged }) {
     setSubcategory(product.subcategory || "");
     setStock((product.stock === null || product.stock === undefined) ? "1" : String(product.stock));
     setActive(!!product.active);
-    setImageUrl(product.image_url || "");
+    setImageUrls(Array.isArray(product.image_urls) ? product.image_urls : (product.image_url ? [product.image_url] : []));
   }, [product.id]);
 
   const parseStock = () => {
-    if (stock === "" || stock === null || stock === undefined) return 1; // normalizar vacío a 1
+    if (stock === "" || stock === null || stock === undefined) return 1;
     const n = parseInt(stock, 10);
     return Number.isNaN(n) || n < 0 ? 1 : n;
   };
@@ -493,28 +522,26 @@ function ProductCard({ product, onChanged }) {
   async function save(patch) {
     try {
       setSaving(true);
-      let body =
-        patch ??
-        {
-          name: name.trim(),
-          price: Number(price || 0),
-          category: category || null,
-          subcategory: subcategory || null,
-          image_url: imageUrl || null,
-          stock: parseStock(),
-          active,
-        };
+      const body = {
+        name: name.trim(),
+        price: Number(price || 0),
+        category: category || null,
+        subcategory: subcategory || null,
+        stock: parseStock(),
+        active,
+        image_urls: imageUrls.length ? imageUrls : null,
+        image_url: imageUrls.length ? imageUrls[0] : null, // principal
+        ...(patch || {})
+      };
 
-      // lógica de activación automática según stock
-      const sVal = (body.stock ?? parseStock());
+      // ajustar activo según stock
+      const sVal = body.stock;
       if (sVal <= 0) {
         body.active = false;
         setActive(false);
-      } else {
-        if (!active) {
-          body.active = true;
-          setActive(true);
-        }
+      } else if (!active) {
+        body.active = true;
+        setActive(true);
       }
 
       const { error } = await supabase.from("products").update(body).eq("id", product.id);
@@ -527,28 +554,51 @@ function ProductCard({ product, onChanged }) {
     }
   }
 
-  async function changeImage(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function uploadImages(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     try {
       setSaving(true);
-      const brandPart = product.brand_id || "brand";
-      const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-      const path = `${brandPart}/${product.id}.${ext}`;
-      const up = await supabase.storage.from("product-images").upload(path, file, {
-        cacheControl: "3600",
-        upsert: true,
-        contentType: file.type || "image/jpeg",
-      });
-      if (up.error) throw up.error;
-      const { data } = supabase.storage.from("product-images").getPublicUrl(path);
-      setImageUrl(data?.publicUrl || "");
-      await save({ image_url: data?.publicUrl || null });
+      const current = [...imageUrls];
+      for (const file of files) {
+        if (current.length >= 5) break;
+        const brandPart = product.brand_id || "brand";
+        const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+        const path = `${brandPart}/${product.id}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const up = await supabase.storage.from("product-images").upload(path, file, {
+          cacheControl: "3600",
+          upsert: true,
+          contentType: file.type || "image/jpeg",
+        });
+        if (up.error) throw up.error;
+        const { data } = supabase.storage.from("product-images").getPublicUrl(path);
+        const url = data?.publicUrl || null;
+        if (url) current.push(url);
+      }
+      setImageUrls(current.slice(0, 5));
+      await save({ image_urls: current.slice(0, 5), image_url: current[0] || null });
     } catch (e2) {
       alert(e2.message || "No se pudo subir la imagen.");
     } finally {
       setSaving(false);
+      // limpiar input
+      e.target.value = "";
     }
+  }
+
+  async function removeImage(idx) {
+    if (!confirm("¿Quitar esta imagen del producto?")) return;
+    const next = imageUrls.filter((_, i) => i !== idx);
+    setImageUrls(next);
+    await save({ image_urls: next, image_url: next[0] || null });
+  }
+
+  async function setPrimary(idx) {
+    const next = [...imageUrls];
+    const [img] = next.splice(idx, 1);
+    next.unshift(img);
+    setImageUrls(next);
+    await save({ image_urls: next, image_url: next[0] || null });
   }
 
   async function softDelete() {
@@ -567,12 +617,34 @@ function ProductCard({ product, onChanged }) {
 
   return (
     <div className="card" style={{ padding: 12 }}>
-      <ImageBox src={imageUrl} alt={name} ratio="4:3" rounded={12} objectFit="cover" />
+      {/* Imagen principal 4:3 */}
+      <ImageBox src={primary} alt={name} ratio="4:3" rounded={12} objectFit="cover" />
+
+      {/* Thumbnails */}
+      <div className="thumbs" style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+        {imageUrls.map((u, i) => (
+          <div key={i} style={{ width: 84 }}>
+            <ImageBox src={u} alt={`img-${i}`} ratio="4:3" rounded={8} />
+            <div className="row" style={{ gap: 6, marginTop: 6 }}>
+              <button className="btn xsmall ghost" onClick={() => setPrimary(i)} disabled={i === 0}>Principal</button>
+              <button className="btn xsmall danger" onClick={() => removeImage(i)}>Quitar</button>
+            </div>
+          </div>
+        ))}
+        {imageUrls.length < 5 && (
+          <div style={{ width: 84 }}>
+            <label className="btn xsmall" style={{ display: "inline-block", width: "100%", textAlign: "center" }}>
+              + Agregar
+              <input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={uploadImages} />
+            </label>
+          </div>
+        )}
+      </div>
 
       <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
         <strong style={{ fontSize: 16 }}>{name || "(Sin nombre)"}</strong>
         <div className="badge">{money(price)}</div>
-        <div className="badge" title="Stock disponible">Stock: {stock === "" ? "…" : parseStock()}</div>
+        <div className="badge">Stock: {stock === "" ? "…" : parseStock()}</div>
         <div style={{ flex: 1 }} />
         <label className="chip">
           <input
@@ -580,10 +652,7 @@ function ProductCard({ product, onChanged }) {
             checked={active}
             onChange={(e) => {
               const v = e.target.checked;
-              if (v && parseStock() <= 0) {
-                alert("No podés activar un producto con stock 0.");
-                return;
-              }
+              if (v && parseStock() <= 0) { alert("No podés activar un producto con stock 0."); return; }
               setActive(v);
               save({ active: v, stock: parseStock() });
             }}
@@ -636,10 +705,6 @@ function ProductCard({ product, onChanged }) {
               }
             }}
           />
-        </div>
-        <div style={{ gridColumn: "1 / -1" }}>
-          <label className="input-label">Cambiar imagen</label>
-          <input className="input" type="file" accept="image/*" onChange={changeImage} />
         </div>
       </div>
       {saving ? <div className="badge" style={{ marginTop: 8 }}>Guardando…</div> : null}
