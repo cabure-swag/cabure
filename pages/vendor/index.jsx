@@ -114,7 +114,7 @@ function VendorInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, role]);
 
-  // cargar productos de la marca elegida
+  // cargar productos/pedidos de la marca elegida
   async function loadProducts(bid = brandId) {
     if (!bid) return;
     setProdLoading(true);
@@ -133,8 +133,6 @@ function VendorInner() {
       setProdLoading(false);
     }
   }
-
-  // cargar pedidos de la marca elegida (con detalles)
   async function loadOrders(bid = brandId) {
     if (!bid) return;
     setOrdersLoading(true);
@@ -152,15 +150,15 @@ function VendorInner() {
       if (orderIds.length) {
         const { data: it, error: e2 } = await supabase
           .from("order_items")
-          .select("id,order_id,product_id,qty,unit_price,created_at");
+          .select("id,order_id,product_id,qty,unit_price,created_at")
+          .in("order_id", orderIds);
         if (e2) throw e2;
         for (const row of it || []) {
           if (!itemsMap[row.order_id]) itemsMap[row.order_id] = [];
           itemsMap[row.order_id].push(row);
         }
       }
-      const merged = (ods || []).map((o) => ({ ...o, items: itemsMap[o.id] || [] }));
-      setOrders(merged);
+      setOrders((ods || []).map((o) => ({ ...o, items: itemsMap[o.id] || [] })));
     } catch (e) {
       setOrders([]);
       alert(e.message || "No se pudieron cargar pedidos.");
@@ -168,8 +166,6 @@ function VendorInner() {
       setOrdersLoading(false);
     }
   }
-
-  // refrescar cuando cambia la marca
   useEffect(() => {
     if (!brandId) return;
     loadProducts(brandId);
@@ -179,7 +175,6 @@ function VendorInner() {
 
   const brand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
 
-  // guards UI
   if (!session) {
     return (
       <div className="container">
@@ -347,7 +342,7 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
   const [price, setPrice] = useState("");
   const [category, setCategory] = useState("");
   const [subcategory, setSubcategory] = useState("");
-  const [stock, setStock] = useState("0");
+  const [stock, setStock] = useState("1"); // DEFAULT = "1"
   const [imageFile, setImageFile] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -356,8 +351,10 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
     if (!name.trim()) { alert("Nombre obligatorio"); return; }
     const priceNum = Number(price || 0);
     if (Number.isNaN(priceNum) || priceNum < 0) { alert("Precio inválido"); return; }
-    let stockNum = parseInt(stock || "0", 10);
-    if (Number.isNaN(stockNum) || stockNum < 0) stockNum = 0;
+
+    // convertir stock (vacío => 1)
+    let stockNum = parseInt(stock === "" ? "1" : stock, 10);
+    if (Number.isNaN(stockNum) || stockNum < 0) stockNum = 1;
 
     setSaving(true);
     try {
@@ -383,7 +380,7 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
         subcategory: subcategory || null,
         image_url,
         stock: stockNum,
-        active: stockNum > 0, // si no hay stock, no lo publiques
+        active: stockNum > 0, // con 1 queda activo
       };
       const { error } = await supabase.from("products").insert(payload);
       if (error) throw error;
@@ -422,9 +419,25 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
         </div>
         <div>
           <label className="input-label">Stock *</label>
-          <input className="input" type="number" min="0" step="1" value={stock} onChange={(e) => setStock(e.target.value)} />
+          <input
+            className="input"
+            type="number"
+            min="0"
+            step="1"
+            value={stock}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "") { setStock(""); return; } // permitir vacío
+              const n = parseInt(v, 10);
+              if (Number.isNaN(n) || n < 0) return;
+              setStock(String(n));
+            }}
+            onBlur={() => {
+              if (stock === "") setStock("1"); // normalizar a 1
+            }}
+          />
           <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-            Si el stock es 0, el producto quedará inactivo automáticamente.
+            Predeterminado 1. Podés ajustarlo cuando quieras.
           </div>
         </div>
         <div>
@@ -447,7 +460,10 @@ function ProductCard({ product, onChanged }) {
   const [price, setPrice] = useState(product.price || 0);
   const [category, setCategory] = useState(product.category || "");
   const [subcategory, setSubcategory] = useState(product.subcategory || "");
-  const [stock, setStock] = useState(Number.isFinite(product.stock) ? product.stock : 0);
+  // DEFAULT = "1" si viene null/undefined
+  const [stock, setStock] = useState(
+    (product.stock === null || product.stock === undefined) ? "1" : String(product.stock)
+  );
   const [active, setActive] = useState(!!product.active);
   const [imageUrl, setImageUrl] = useState(product.image_url || "");
   const [saving, setSaving] = useState(false);
@@ -457,10 +473,16 @@ function ProductCard({ product, onChanged }) {
     setPrice(product.price || 0);
     setCategory(product.category || "");
     setSubcategory(product.subcategory || "");
-    setStock(Number.isFinite(product.stock) ? product.stock : 0);
+    setStock((product.stock === null || product.stock === undefined) ? "1" : String(product.stock));
     setActive(!!product.active);
     setImageUrl(product.image_url || "");
   }, [product.id]);
+
+  const parseStock = () => {
+    if (stock === "" || stock === null || stock === undefined) return 1; // normalizar vacío a 1
+    const n = parseInt(stock, 10);
+    return Number.isNaN(n) || n < 0 ? 1 : n;
+  };
 
   async function save(patch) {
     try {
@@ -473,12 +495,11 @@ function ProductCard({ product, onChanged }) {
           category: category || null,
           subcategory: subcategory || null,
           image_url: imageUrl || null,
-          stock: Number.isFinite(stock) && stock >= 0 ? stock : 0,
+          stock: parseStock(),
           active,
         };
 
-      // si stock es 0 y estaba activo, forzamos inactivo
-      if ((body.stock ?? stock) === 0) {
+      if ((body.stock ?? parseStock()) === 0) {
         body.active = false;
         setActive(false);
       }
@@ -536,7 +557,7 @@ function ProductCard({ product, onChanged }) {
       <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <strong style={{ fontSize: 16 }}>{name || "(Sin nombre)"}</strong>
         <div className="badge">{money(price)}</div>
-        <div className="badge" title="Stock disponible">Stock: {Number.isFinite(stock) ? stock : 0}</div>
+        <div className="badge" title="Stock disponible">Stock: {stock === "" ? "…" : parseStock()}</div>
         <div style={{ flex: 1 }} />
         <label className="chip">
           <input
@@ -544,13 +565,12 @@ function ProductCard({ product, onChanged }) {
             checked={active}
             onChange={(e) => { 
               const v = e.target.checked;
-              // si no hay stock, no permitir activarlo
-              if (v && (Number(stock) <= 0)) {
+              if (v && parseStock() <= 0) {
                 alert("No podés activar un producto con stock 0.");
                 return;
               }
               setActive(v);
-              save({ active: v });
+              save({ active: v, stock: parseStock() });
             }}
           /> activo
         </label>
@@ -581,15 +601,22 @@ function ProductCard({ product, onChanged }) {
             type="number"
             min="0"
             step="1"
-            value={Number.isFinite(stock) ? stock : 0}
+            value={stock}
             onChange={(e) => {
-              const v = parseInt(e.target.value || "0", 10);
-              setStock(Number.isNaN(v) || v < 0 ? 0 : v);
+              const v = e.target.value;
+              if (v === "") { setStock(""); return; } // permitir vacío
+              const n = parseInt(v, 10);
+              if (Number.isNaN(n) || n < 0) return;
+              setStock(String(n));
             }}
-            onBlur={() => save()}
+            onBlur={() => {
+              const normalized = (stock === "" ? "1" : stock); // normalizar a 1
+              setStock(normalized);
+              save({ stock: parseInt(normalized, 10) });
+            }}
           />
           <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-            Cuando el stock llegue a 0, el producto se desactiva solo.
+            Predeterminado 1. Si lo bajás a 0, el producto se desactiva.
           </div>
         </div>
         <div style={{ gridColumn: "1 / -1" }}>
