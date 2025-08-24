@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Head from "next/head";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
+import ImageBox from "@/components/ImageBox";
 
 // ----- helpers -----
 const money = (n) => {
@@ -114,7 +115,7 @@ function VendorInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, role]);
 
-  // cargar productos/pedidos de la marca elegida
+  // cargar productos de la marca elegida
   async function loadProducts(bid = brandId) {
     if (!bid) return;
     setProdLoading(true);
@@ -133,6 +134,8 @@ function VendorInner() {
       setProdLoading(false);
     }
   }
+
+  // cargar pedidos de la marca elegida (con detalles)
   async function loadOrders(bid = brandId) {
     if (!bid) return;
     setOrdersLoading(true);
@@ -166,6 +169,8 @@ function VendorInner() {
       setOrdersLoading(false);
     }
   }
+
+  // refrescar cuando cambia la marca
   useEffect(() => {
     if (!brandId) return;
     loadProducts(brandId);
@@ -175,6 +180,7 @@ function VendorInner() {
 
   const brand = useMemo(() => (brands || []).find((b) => b.id === brandId) || null, [brands, brandId]);
 
+  // guards UI
   if (!session) {
     return (
       <div className="container">
@@ -436,13 +442,13 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
               if (stock === "") setStock("1"); // normalizar a 1
             }}
           />
-          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-            Predeterminado 1. Podés ajustarlo cuando quieras.
-          </div>
         </div>
         <div>
           <label className="input-label">Imagen</label>
           <input className="input" type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} />
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <ImageBox src={null} alt="preview" ratio="4:3" />
         </div>
         <div style={{ gridColumn: "1 / -1", textAlign: "right" }}>
           <button className="btn" type="submit" disabled={saving}>
@@ -499,9 +505,16 @@ function ProductCard({ product, onChanged }) {
           active,
         };
 
-      if ((body.stock ?? parseStock()) === 0) {
+      // lógica de activación automática según stock
+      const sVal = (body.stock ?? parseStock());
+      if (sVal <= 0) {
         body.active = false;
         setActive(false);
+      } else {
+        if (!active) {
+          body.active = true;
+          setActive(true);
+        }
       }
 
       const { error } = await supabase.from("products").update(body).eq("id", product.id);
@@ -554,7 +567,9 @@ function ProductCard({ product, onChanged }) {
 
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <ImageBox src={imageUrl} alt={name} ratio="4:3" rounded={12} objectFit="cover" />
+
+      <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
         <strong style={{ fontSize: 16 }}>{name || "(Sin nombre)"}</strong>
         <div className="badge">{money(price)}</div>
         <div className="badge" title="Stock disponible">Stock: {stock === "" ? "…" : parseStock()}</div>
@@ -563,7 +578,7 @@ function ProductCard({ product, onChanged }) {
           <input
             type="checkbox"
             checked={active}
-            onChange={(e) => { 
+            onChange={(e) => {
               const v = e.target.checked;
               if (v && parseStock() <= 0) {
                 alert("No podés activar un producto con stock 0.");
@@ -604,35 +619,30 @@ function ProductCard({ product, onChanged }) {
             value={stock}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "") { setStock(""); return; } // permitir vacío
+              if (v === "") { setStock(""); return; }
               const n = parseInt(v, 10);
               if (Number.isNaN(n) || n < 0) return;
               setStock(String(n));
             }}
             onBlur={() => {
-              const normalized = (stock === "" ? "1" : stock); // normalizar a 1
+              const normalized = (stock === "" ? "1" : stock);
               setStock(normalized);
-              save({ stock: parseInt(normalized, 10) });
+              const n = parseInt(normalized, 10);
+              if (Number.isNaN(n) || n <= 0) {
+                save({ stock: 0, active: false });
+              } else {
+                save({ stock: n, active: true });
+                setActive(true);
+              }
             }}
           />
-          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-            Predeterminado 1. Si lo bajás a 0, el producto se desactiva.
-          </div>
         </div>
         <div style={{ gridColumn: "1 / -1" }}>
-          <label className="input-label">Imagen</label>
+          <label className="input-label">Cambiar imagen</label>
           <input className="input" type="file" accept="image/*" onChange={changeImage} />
-          <div style={{ width: "100%", height: 180, display: "grid", placeItems: "center", background: "#0E1012", border: "1px solid var(--border)", borderRadius: 12, marginTop: 8 }}>
-            {imageUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={imageUrl} alt={name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 10 }} />
-            ) : (
-              <div style={{ opacity: 0.6, fontSize: 12 }}>Sin imagen</div>
-            )}
-          </div>
-          {saving ? <div className="badge" style={{ marginTop: 8 }}>Guardando…</div> : null}
         </div>
       </div>
+      {saving ? <div className="badge" style={{ marginTop: 8 }}>Guardando…</div> : null}
     </div>
   );
 }
