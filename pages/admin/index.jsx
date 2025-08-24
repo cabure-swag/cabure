@@ -170,7 +170,7 @@ function AdminInner() {
 
 function CreateBrandCard({ onCancel, onCreated }) {
   const [name, setName] = useState("");
-  const [slugInput, setSlugInput] = useState("");
+  const [slugRaw, setSlugRaw] = useState("");
   const [description, setDescription] = useState("");
   const [instagram, setInstagram] = useState("");
   const [color, setColor] = useState("#111827");
@@ -178,12 +178,13 @@ function CreateBrandCard({ onCancel, onCreated }) {
 
   function handleName(v) {
     setName(v);
-    if (!slugInput) setSlugInput(slugify(v));
+    if (!slugRaw) setSlugRaw(slugify(v));
   }
 
   async function createBrand(e) {
     e.preventDefault();
-    const s = slugify(slugInput || name);
+    const normalized = slugify(slugRaw);
+    const s = normalized || slugify(name);
     if (!name.trim() || !s) { alert("Nombre y slug son obligatorios."); return; }
     setSaving(true);
     try {
@@ -194,6 +195,7 @@ function CreateBrandCard({ onCancel, onCreated }) {
         instagram_url: instagram.trim() || null,
         color,
         active: true,
+        // mp_access_token, bank_alias, bank_cbu quedan null por defecto
       };
       const { data, error } = await supabase
         .from("brands")
@@ -210,7 +212,7 @@ function CreateBrandCard({ onCancel, onCreated }) {
     }
   }
 
-  const computedSlug = slugify(slugInput || name);
+  const slugPreview = slugify(slugRaw || "");
 
   return (
     <section className="card" style={{ padding:16, marginTop:12, border:"1px dashed var(--border)" }}>
@@ -227,8 +229,8 @@ function CreateBrandCard({ onCancel, onCreated }) {
         </div>
         <div>
           <label className="input-label">Slug *</label>
-          <input className="input" value={slugInput} onChange={(e)=>setSlugInput(slugify(e.target.value))} />
-          <div style={{ fontSize:12, opacity:0.7, marginTop:4 }}>Quedará como /marcas/{computedSlug || "slug"}</div>
+          <input className="input" value={slugRaw} onChange={(e)=>setSlugRaw(e.target.value)} />
+          <div style={{ fontSize:12, opacity:0.7, marginTop:4 }}>Quedará como /marcas/{slugPreview || "slug"}</div>
         </div>
         <div style={{ gridColumn:"1 / -1" }}>
           <label className="input-label">Descripción</label>
@@ -442,6 +444,7 @@ function BrandVendors({ brandId }) {
     const email = emailToAdd.trim().toLowerCase();
     if (!email) return;
     try {
+      // Debe existir un perfil (el usuario tiene que haber iniciado sesión al menos una vez)
       const { data: prof, error: e1 } = await supabase
         .from("profiles")
         .select("user_id, role")
@@ -453,10 +456,12 @@ function BrandVendors({ brandId }) {
         alert("Ese email no tiene perfil aún (debe iniciar sesión al menos una vez).");
         return;
       }
+      // Aseguramos rol vendor
       if (prof.role !== "vendor") {
         const { error: e2 } = await supabase.from("profiles").update({ role: "vendor" }).eq("user_id", prof.user_id);
         if (e2) throw e2;
       }
+      // Vinculamos
       const { error: e3 } = await supabase.from("brand_users").insert({ brand_id: brandId, user_id: prof.user_id });
       if (e3) throw e3;
 
