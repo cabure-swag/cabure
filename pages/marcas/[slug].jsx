@@ -1,5 +1,5 @@
 // pages/marcas/[slug].jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -11,6 +11,15 @@ const money = (n) => {
   return v.toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
 };
 
+// Pluralización muy simple en español para mostrar chips (no afecta la DB)
+function pluralEs(word = "") {
+  const s = (word || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s.endsWith("z")) return s.slice(0, -1) + "ces";
+  if (/[aeiou]$/.test(s)) return s + "s";
+  return s + "es";
+}
+
 export default function BrandCatalog() {
   const router = useRouter();
   const { slug } = router.query;
@@ -18,15 +27,22 @@ export default function BrandCatalog() {
   const [brand, setBrand] = useState(null);
   const [products, setProducts] = useState(null);
 
-  // filtro dinámico y búsqueda
+  // Filtro y búsqueda
   const [filter, setFilter] = useState("Todas");
   const [q, setQ] = useState("");
 
-  // índice de imagen visible por producto
+  // Índices de mini-galería por producto
   const [imgIdx, setImgIdx] = useState({}); // { [productId]: number }
 
-  // toast simple de “agregado”
+  // “Agregado ✓”
   const [addedId, setAddedId] = useState(null);
+
+  // Modal de galería (visor grande)
+  const [modal, setModal] = useState({
+    open: false,
+    product: null, // objeto producto
+    index: 0,      // índice dentro de su galería
+  });
 
   useEffect(() => {
     if (!slug) return;
@@ -56,17 +72,20 @@ export default function BrandCatalog() {
     })();
   }, [slug]);
 
-  // categorías dinámicas (solo las que existen para esta marca)
-  const categories = useMemo(() => {
+  // Categorías dinámicas (a partir de los productos de la marca)
+  // Mostramos “Todas” + categorías en plural, pero filtramos por el valor original.
+  const { categories, catLabels } = useMemo(() => {
     const set = new Set();
     (products || []).forEach((p) => {
       const c = (p.category || "").trim();
       if (c) set.add(c);
     });
-    return ["Todas", ...Array.from(set)];
+    const arr = Array.from(set);
+    const labels = new Map(arr.map((c) => [c, pluralEs(c)]));
+    return { categories: ["Todas", ...arr], catLabels: labels };
   }, [products]);
 
-  // listado visible según filtro y búsqueda
+  // Lista visible
   const visible = useMemo(() => {
     let list = products || [];
     if (filter && filter !== "Todas") {
@@ -79,7 +98,7 @@ export default function BrandCatalog() {
     return list;
   }, [products, filter, q]);
 
-  // helpers de galería
+  // Helpers de galería
   const getGallery = (p) => {
     const arr = Array.isArray(p.image_urls) && p.image_urls.length ? p.image_urls : (p.image_url ? [p.image_url] : []);
     return arr.slice(0, 5);
@@ -102,7 +121,7 @@ export default function BrandCatalog() {
     setImgIdx((prev) => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
   };
 
-  // carrito por marca en localStorage (no redirige)
+  // Carrito por marca (localStorage)
   const addToCart = (p) => {
     if (!brand?.id) return;
     const key = `cart:${brand.id}`;
@@ -132,6 +151,37 @@ export default function BrandCatalog() {
     setTimeout(() => setAddedId(null), 1200);
   };
 
+  // Abrir visor modal con una imagen específica
+  const openModal = (p, startIndex = 0) => {
+    const gal = getGallery(p);
+    if (!gal.length) return;
+    const norm = ((startIndex % gal.length) + gal.length) % gal.length;
+    setModal({ open: true, product: p, index: norm });
+  };
+  const closeModal = useCallback(() => setModal({ open: false, product: null, index: 0 }), []);
+  const modalPrev = () => {
+    const gal = getGallery(modal.product || {});
+    if (!gal.length) return;
+    setModal((m) => ({ ...m, index: ((m.index - 1) % gal.length + gal.length) % gal.length }));
+  };
+  const modalNext = () => {
+    const gal = getGallery(modal.product || {});
+    if (!gal.length) return;
+    setModal((m) => ({ ...m, index: (m.index + 1) % gal.length }));
+  };
+
+  // Navegación por teclado dentro del modal
+  useEffect(() => {
+    if (!modal.open) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); closeModal(); }
+      if (e.key === "ArrowLeft") { e.preventDefault(); modalPrev(); }
+      if (e.key === "ArrowRight") { e.preventDefault(); modalNext(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [modal.open]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="container">
       <Head>
@@ -149,7 +199,7 @@ export default function BrandCatalog() {
           <section className="card" style={{ padding: 16, marginTop: 12, borderColor: brand.color || "#222" }}>
             <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ width: 120 }}>
-                <ImageBox src={brand.logo_url || null} alt={brand.name} ratio="4:3" objectFit="contain" />
+                <ImageBox src={brand.logo_url || null} alt={brand.name} ratio="1:1" objectFit="contain" />
               </div>
               <div style={{ flex: 1, minWidth: 240 }}>
                 <h1 style={{ margin: 0 }}>{brand.name}</h1>
@@ -175,19 +225,22 @@ export default function BrandCatalog() {
               </div>
             </div>
 
-            {/* filtros y búsqueda */}
+            {/* Filtros y búsqueda */}
             <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
               <div className="chips" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {categories.map((c) => (
-                  <button
-                    key={c}
-                    className={`chip ${filter === c ? "active" : ""}`}
-                    onClick={() => setFilter(c)}
-                    aria-pressed={filter === c}
-                  >
-                    {c}
-                  </button>
-                ))}
+                {categories.map((c) => {
+                  const label = c === "Todas" ? "Todas" : (catLabels.get(c) || c);
+                  return (
+                    <button
+                      key={c}
+                      className={`chip ${filter === c ? "active" : ""}`}
+                      onClick={() => setFilter(c)}
+                      aria-pressed={filter === c}
+                    >
+                      {label.charAt(0).toUpperCase() + label.slice(1)}
+                    </button>
+                  );
+                })}
               </div>
               <div style={{ flex: 1, minWidth: 200 }} />
               <input
@@ -201,7 +254,7 @@ export default function BrandCatalog() {
             </div>
           </section>
 
-          {/* grilla de productos 4 por fila */}
+          {/* Grilla 4 por fila */}
           <section style={{ marginTop: 12 }}>
             {!products ? (
               <div className="skel" style={{ height: 200 }} />
@@ -223,14 +276,14 @@ export default function BrandCatalog() {
 
                   return (
                     <article key={p.id} className="card" style={{ padding: 12 }}>
-                      <div className="galleryWrap">
-                        <ImageBox src={current} alt={p.name} ratio="4:3" />
+                      <div className="galleryWrap" onClick={() => openModal(p, activeDot)} role="button" tabIndex={0}>
+                        <ImageBox src={current} alt={p.name} ratio="1:1" />
                         {showArrows && (
                           <>
                             <button
                               className="navBtn navLeft"
                               aria-label="Imagen anterior"
-                              onClick={() => goLeft(p)}
+                              onClick={(e) => { e.stopPropagation(); goLeft(p); }}
                               title="Anterior"
                             >
                               ◀
@@ -238,7 +291,7 @@ export default function BrandCatalog() {
                             <button
                               className="navBtn navRight"
                               aria-label="Siguiente imagen"
-                              onClick={() => goRight(p)}
+                              onClick={(e) => { e.stopPropagation(); goRight(p); }}
                               title="Siguiente"
                             >
                               ▶
@@ -255,7 +308,7 @@ export default function BrandCatalog() {
                       <div style={{ marginTop: 8 }}>
                         <div style={{ fontWeight: 600 }}>{p.name}</div>
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
-                          {p.subcategory || p.category || "—"}
+                          {p.subcategory || p.category || "—" /* aquí mostramos singular si así viene */}
                         </div>
                         <div className="badge" style={{ marginTop: 6 }}>{money(p.price)}</div>
                       </div>
@@ -274,7 +327,36 @@ export default function BrandCatalog() {
             )}
           </section>
 
-          {/* estilos (un solo bloque) */}
+          {/* Modal visor */}
+          {modal.open && modal.product && (
+            <div className="modalBackdrop" onClick={closeModal} role="dialog" aria-modal="true">
+              <div className="modalContent" onClick={(e) => e.stopPropagation()}>
+                <button className="modalClose" aria-label="Cerrar" onClick={closeModal}>✕</button>
+                <div className="modalInner">
+                  <button className="modalArrow left" onClick={modalPrev} aria-label="Anterior">◀</button>
+                  <div className="modalImage">
+                    <img
+                      src={getGallery(modal.product)[modal.index]}
+                      alt={modal.product.name}
+                      style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain", borderRadius: 8 }}
+                    />
+                  </div>
+                  <button className="modalArrow right" onClick={modalNext} aria-label="Siguiente">▶</button>
+                </div>
+                <div className="modalDots">
+                  {getGallery(modal.product).map((_, i) => (
+                    <span
+                      key={i}
+                      className={`dot ${i === modal.index ? "dotOn" : ""}`}
+                      onClick={() => setModal((m) => ({ ...m, index: i }))}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* estilos (único bloque) */}
           <style jsx>{`
             .grid.grid-4 {
               display: grid;
@@ -290,7 +372,7 @@ export default function BrandCatalog() {
               .grid.grid-4 { grid-template-columns: 1fr; }
             }
 
-            .galleryWrap { position: relative; }
+            .galleryWrap { position: relative; cursor: zoom-in; }
             .navBtn {
               position: absolute;
               top: 50%;
@@ -318,6 +400,7 @@ export default function BrandCatalog() {
               display: flex;
               justify-content: center;
               gap: 6px;
+              pointer-events: none;
             }
             .dot {
               width: 6px;
@@ -326,6 +409,74 @@ export default function BrandCatalog() {
               background: rgba(255,255,255,0.35);
             }
             .dotOn { background: rgba(255,255,255,0.9); }
+
+            /* Modal */
+            .modalBackdrop {
+              position: fixed;
+              inset: 0;
+              background: rgba(0,0,0,0.75);
+              display: grid;
+              place-items: center;
+              padding: 16px;
+              z-index: 1000;
+            }
+            .modalContent {
+              position: relative;
+              width: 100%;
+              max-width: 1000px;
+              background: #0f0f10;
+              border: 1px solid var(--border, #222);
+              border-radius: 16px;
+              padding: 16px;
+            }
+            .modalClose {
+              position: absolute;
+              top: 10px;
+              right: 10px;
+              width: 32px;
+              height: 32px;
+              border-radius: 999px;
+              border: 1px solid #333;
+              background: #18181a;
+              color: #fff;
+              cursor: pointer;
+            }
+            .modalInner {
+              display: grid;
+              grid-template-columns: auto 1fr auto;
+              gap: 8px;
+              align-items: center;
+            }
+            .modalArrow {
+              background: rgba(255,255,255,0.08);
+              border: 1px solid rgba(255,255,255,0.15);
+              color: #fff;
+              width: 40px;
+              height: 40px;
+              border-radius: 999px;
+              cursor: pointer;
+            }
+            .modalArrow.left { justify-self: start; }
+            .modalArrow.right { justify-self: end; }
+            .modalImage {
+              display: grid;
+              place-items: center;
+              padding: 8px;
+            }
+            .modalDots {
+              display: flex;
+              justify-content: center;
+              gap: 6px;
+              margin-top: 10px;
+            }
+            .modalDots .dot {
+              width: 8px;
+              height: 8px;
+              border-radius: 999px;
+              background: #3a3a3a;
+              cursor: pointer;
+            }
+            .modalDots .dotOn { background: #fff; }
           `}</style>
         </>
       )}
