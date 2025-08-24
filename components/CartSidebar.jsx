@@ -1,227 +1,202 @@
-// components/CartSidebar.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { readBrandCart, writeBrandCart, clearBrandCart } from "@/utils/brandCart";
 
-function currency(n) {
-  try {
-    return new Intl.NumberFormat("es-AR", {
-      style: "currency",
-      currency: "ARS",
-      maximumFractionDigits: 0,
-    }).format(Number(n || 0));
-  } catch {
-    return `$${n || 0}`;
-  }
-}
-
-export default function CartSidebar({ brandSlug, className = "" }) {
-  const storageKey = useMemo(() => `cart:${brandSlug}`, [brandSlug]);
-  const [open, setOpen] = useState(true);
+export default function CartSidebar({ brandSlug, compact = false }) {
   const [items, setItems] = useState([]);
 
-  // Cargar carrito desde localStorage
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) setItems(JSON.parse(raw));
-    } catch {
-      // no-op
-    }
-  }, [storageKey]);
-
-  // Guardar carrito cuando cambie
-  useEffect(() => {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(items));
-    } catch {
-      // no-op
-    }
-  }, [items, storageKey]);
-
-  // Escuchar cambios desde otras pestañas
-  useEffect(() => {
-    function onStorage(e) {
-      if (e.key === storageKey) {
-        try {
-          setItems(JSON.parse(e.newValue || "[]"));
-        } catch {
-          setItems([]);
-        }
+    if (!brandSlug) return;
+    setItems(readBrandCart(brandSlug));
+    const onStorage = (e) => {
+      if (e.key === `cabure:cart:${brandSlug}`) {
+        setItems(readBrandCart(brandSlug));
       }
-    }
+    };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [storageKey]);
+  }, [brandSlug]);
 
   const subtotal = useMemo(
-    () =>
-      items.reduce((acc, it) => acc + Number(it.price || 0) * Number(it.qty || 0), 0),
+    () => items.reduce((acc, it) => acc + Number(it.price || 0) * Number(it.qty || 1), 0),
     [items]
   );
 
-  function inc(idx) {
-    setItems((arr) => {
-      const copy = [...arr];
-      const it = { ...copy[idx] };
-      const next = Number(it.qty || 0) + 1;
-      const max = Number(it.stock ?? Infinity);
-      it.qty = Math.min(next, max);
-      copy[idx] = it;
-      return copy;
-    });
-  }
+  const setQty = (id, v) => {
+    const n = Math.max(1, Number(v || 1));
+    const next = items.map((it) => (it.id === id ? { ...it, qty: n } : it));
+    setItems(next);
+    writeBrandCart(brandSlug, next);
+  };
 
-  function dec(idx) {
-    setItems((arr) => {
-      const copy = [...arr];
-      const it = { ...copy[idx] };
-      const next = Number(it.qty || 0) - 1;
-      it.qty = Math.max(next, 1);
-      copy[idx] = it;
-      return copy;
-    });
-  }
+  const remove = (id) => {
+    const next = items.filter((it) => it.id !== id);
+    setItems(next);
+    writeBrandCart(brandSlug, next);
+  };
 
-  function removeIdx(idx) {
-    setItems((arr) => arr.filter((_, i) => i !== idx));
-  }
-
-  function clear() {
-    if (!items.length) return;
-    if (!confirm("¿Vaciar carrito?")) return;
+  const clear = () => {
+    clearBrandCart(brandSlug);
     setItems([]);
-  }
-
-  function checkout() {
-    // Acá solo navegamos a la página de checkout de la marca si existe
-    // o emitimos un evento para que la página actual resuelva el flujo.
-    const ev = new CustomEvent("brand:checkout", { detail: { brandSlug, items } });
-    window.dispatchEvent(ev);
-    // Si ya tenés /checkout/[brandSlug], podés redirigir:
-    try {
-      const url = `/checkout/${encodeURIComponent(brandSlug)}`;
-      if (window.location.pathname !== url) window.location.href = url;
-    } catch {}
-  }
+  };
 
   return (
-    <aside
-      className={`card`}
-      style={{
-        padding: 16,
-        width: 360,
-        border: "1px solid var(--border, #333)",
-        borderRadius: 12,
-        background: "var(--panel, #0f1115)",
-        position: "sticky",
-        top: 16,
-        alignSelf: "flex-start",
-        ...(/string/.test(typeof className) ? {} : {}),
-      }}
-    >
-      <div className="row" style={{ alignItems: "center", marginBottom: 8 }}>
-        <h3 style={{ margin: 0, fontWeight: 700 }}>Carrito</h3>
-        <div style={{ flex: 1 }} />
-        <button
-          className="btn btn-ghost"
-          onClick={() => setOpen((v) => !v)}
-          aria-label={open ? "Ocultar" : "Mostrar"}
-        >
-          {open ? "Ocultar" : "Mostrar"}
+    <aside className={`cart ${compact ? "cart--compact" : ""}`}>
+      <div className="head">
+        <h3>Carrito</h3>
+        <div className="spacer" />
+        <button className="btn sm" onClick={() => document.body.classList.toggle("cart-hide")}>
+          {compact ? "Ocultar" : "Cerrar"}
         </button>
       </div>
 
-      {!open ? null : (
-        <>
-          {!items.length ? (
-            <p style={{ opacity: 0.7, marginTop: 8 }}>Tu carrito está vacío.</p>
-          ) : (
-            <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-              {items.map((it, idx) => (
-                <li
-                  key={it.product_id ?? idx}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "64px 1fr auto",
-                    gap: 12,
-                    padding: "10px 0",
-                    borderTop: "1px dashed var(--border, #333)",
-                  }}
-                >
-                  <img
-                    src={it.image || "/placeholder.png"}
-                    alt={it.name || "Producto"}
-                    width={64}
-                    height={64}
-                    style={{
-                      width: 64,
-                      height: 64,
-                      objectFit: "cover",
-                      borderRadius: 8,
-                      background: "#1a1d24",
-                    }}
-                  />
-                  <div>
-                    <div style={{ fontWeight: 600, lineHeight: 1.2 }}>
-                      {it.name || "Sin nombre"}
-                    </div>
-                    <div style={{ fontSize: 12, opacity: 0.7 }}>
-                      {currency(it.price)} · Stock: {it.stock ?? "—"}
-                    </div>
-                    <div
-                      className="row"
-                      style={{ gap: 8, alignItems: "center", marginTop: 6 }}
-                    >
-                      <button className="btn btn-ghost" onClick={() => dec(idx)}>
-                        −
-                      </button>
-                      <span style={{ minWidth: 20, textAlign: "center" }}>
-                        {it.qty}
-                      </span>
-                      <button className="btn btn-ghost" onClick={() => inc(idx)}>
-                        +
-                      </button>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontWeight: 700 }}>{currency(it.price * it.qty)}</div>
-                    <button
-                      className="btn btn-ghost"
-                      style={{ marginTop: 6 }}
-                      onClick={() => removeIdx(idx)}
-                    >
-                      Quitar
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+      <div className="list">
+        {items.length === 0 ? (
+          <div className="empty">Tu carrito está vacío.</div>
+        ) : (
+          items.map((it) => (
+            <div className="row" key={it.id}>
+              <div className="name">{it.name}</div>
+              <input
+                className="qty"
+                type="number"
+                min={1}
+                value={Number(it.qty || 1)}
+                onChange={(e) => setQty(it.id, e.target.value)}
+              />
+              <div className="price">${Number(it.price || 0) * Number(it.qty || 1)}</div>
+              <button className="x" aria-label="Eliminar" onClick={() => remove(it.id)}>
+                ×
+              </button>
+            </div>
+          ))
+        )}
+      </div>
 
-          <div
-            style={{
-              marginTop: 12,
-              paddingTop: 12,
-              borderTop: "1px solid var(--border, #333)",
-            }}
+      <div className="foot">
+        <div className="subtotal">
+          <span>Subtotal</span>
+          <strong>${subtotal}</strong>
+        </div>
+        <div className="actions">
+          <button className="btn ghost" onClick={clear} disabled={items.length === 0}>
+            Vaciar
+          </button>
+          <button
+            className="btn"
+            disabled={items.length === 0}
+            onClick={() => (window.location.href = `/checkout/${brandSlug}`)}
           >
-            <div className="row" style={{ marginBottom: 8 }}>
-              <span style={{ opacity: 0.8 }}>Subtotal</span>
-              <div style={{ flex: 1 }} />
-              <strong>{currency(subtotal)}</strong>
-            </div>
+            Continuar
+          </button>
+        </div>
+      </div>
 
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn btn-ghost" onClick={clear}>
-                Vaciar
-              </button>
-              <div style={{ flex: 1 }} />
-              <button className="btn btn-primary" onClick={checkout}>
-                Continuar
-              </button>
-            </div>
-          </div>
-        </>
-      )}
+      <style jsx>{`
+        .cart {
+          background: #0b0d11;
+          border: 1px solid #1f2430;
+          border-radius: 12px;
+          padding: 12px;
+        }
+        .head {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .head h3 {
+          margin: 0;
+          font-size: 16px;
+        }
+        .spacer {
+          flex: 1;
+        }
+        .list {
+          margin: 10px 0;
+          display: grid;
+          gap: 8px;
+          max-height: 300px;
+          overflow: auto;
+        }
+        .row {
+          display: grid;
+          grid-template-columns: 1fr 60px 90px 26px;
+          gap: 6px;
+          align-items: center;
+          border: 1px solid #1f2430;
+          border-radius: 8px;
+          padding: 6px 8px;
+          background: #0f1115;
+        }
+        .name {
+          font-size: 13px;
+        }
+        .qty {
+          width: 100%;
+          height: 30px;
+          background: #0b0d11;
+          color: #e8ecf8;
+          border: 1px solid #1f2430;
+          border-radius: 8px;
+          padding: 0 6px;
+        }
+        .price {
+          text-align: right;
+        }
+        .x {
+          background: transparent;
+          border: none;
+          color: #a8b3cf;
+          cursor: pointer;
+          font-size: 18px;
+        }
+        .empty {
+          color: #a8b3cf;
+          text-align: center;
+          border: 1px dashed #1f2430;
+          border-radius: 8px;
+          padding: 14px;
+        }
+        .foot {
+          border-top: 1px solid #1f2430;
+          padding-top: 10px;
+          display: grid;
+          gap: 10px;
+        }
+        .subtotal {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .actions {
+          display: flex;
+          gap: 8px;
+        }
+        .btn {
+          height: 36px;
+          border-radius: 10px;
+          background: #00f0b5;
+          color: #0b0d11;
+          font-weight: 700;
+          border: none;
+          padding: 0 12px;
+          cursor: pointer;
+        }
+        .btn.ghost {
+          background: #0b0d11;
+          color: #e8ecf8;
+          border: 1px solid #1f2430;
+        }
+        .btn.sm {
+          height: 30px;
+          border-radius: 8px;
+          padding: 0 10px;
+        }
+        .btn[disabled] {
+          background: #222b36;
+          color: #7a859b;
+          cursor: not-allowed;
+        }
+      `}</style>
     </aside>
   );
 }
