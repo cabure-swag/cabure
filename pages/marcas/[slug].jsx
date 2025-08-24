@@ -1,23 +1,29 @@
+// pages/marcas/[slug].jsx
 import Head from "next/head";
 import Image from "next/image";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
 
-// Cargamos el carrito embebido de forma dinámica.
-// Si tu proyecto ya tiene "@/components/CartSidebar", se usa.
-// Si no existe, no rompe el build (renderiza null).
-const CartSidebar = dynamic(
-  () =>
-    import("@/components/CartSidebar")
-      .then((m) => m.default || m)
-      .catch(() => () => null),
-  { ssr: false, loading: () => null }
-);
+// ⚠️ IMPORTS RELATIVOS (sin "@")
+import CartSidebar from "../../components/CartSidebar";
+import { addToBrandCart } from "../../utils/brandCart";
+import { supabase } from "../../lib/supabaseClient";
+
+function currency(n) {
+  try {
+    return new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency: "ARS",
+      maximumFractionDigits: 0,
+    }).format(Number(n || 0));
+  } catch {
+    return `$${n || 0}`;
+  }
+}
 
 export default function BrandPage({ brand, products: initial }) {
   const [q, setQ] = useState("");
+
   const products = useMemo(() => {
     const query = q.trim().toLowerCase();
     if (!query) return initial;
@@ -33,66 +39,73 @@ export default function BrandPage({ brand, products: initial }) {
       <Head>
         <title>{brand.name} — CABURE.STORE</title>
         <meta name="robots" content="index,follow" />
+        <meta property="og:title" content={`${brand.name} — CABURE.STORE`} />
+        <meta property="og:description" content={brand.description || "Catálogo"} />
+        <meta property="og:type" content="website" />
+        {brand.logo_url ? <meta property="og:image" content={brand.logo_url} /> : null}
+        <link rel="canonical" href={`https://cabure.store/marcas/${brand.slug}`} />
       </Head>
 
       <div className="wrap">
-        {/* HEADER PERFIL + CARRITO */}
-        <section className="brandHeader card">
-          <div className="left">
-            <div className="logo">
-              {brand.logo_url ? (
-                <Image
-                  src={brand.logo_url}
-                  alt={brand.name}
-                  width={96}
-                  height={96}
-                />
-              ) : (
-                <div className="placeholder" />
-              )}
-            </div>
-
-            <div className="meta">
-              <h1 className="title">{brand.name}</h1>
-              {brand.description ? (
-                <p className="desc">{brand.description}</p>
-              ) : null}
-              <div className="links">
-                {brand.instagram_url ? (
-                  <Link
-                    href={brand.instagram_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="ig"
-                  >
-                    <span aria-hidden>📷</span> Instagram
-                  </Link>
-                ) : null}
+        {/* ENCABEZADO: PERFIL IZQUIERDA + CARRITO DERECHA */}
+        <section className="card headerGrid">
+          <div className="colLeft">
+            <div className="brandRow">
+              <div className="logo">
+                {brand.logo_url ? (
+                  <Image
+                    src={brand.logo_url}
+                    alt={brand.name}
+                    width={96}
+                    height={96}
+                    style={{ objectFit: "contain" }}
+                  />
+                ) : (
+                  <div className="logoPh" />
+                )}
               </div>
-
-              {/* Filtros básicos */}
-              <div className="filters">
-                <input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="Buscar producto…"
-                />
+              <div className="meta">
+                <h1 className="title">{brand.name}</h1>
+                {brand.description ? (
+                  <p className="desc">{brand.description}</p>
+                ) : null}
+                <div className="links">
+                  {brand.instagram_url ? (
+                    <Link
+                      href={brand.instagram_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btnGhost"
+                      aria-label="Instagram de la marca"
+                    >
+                      <span style={{ marginRight: 6 }}>📷</span> Instagram
+                    </Link>
+                  ) : null}
+                </div>
+                <div className="filters">
+                  <input
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder="Buscar producto…"
+                    aria-label="Buscar producto"
+                  />
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Carrito embebido a la derecha del perfil */}
-          <aside className="right">
-            <CartSidebar embedded brandId={brand.id} />
+          <aside className="colRight">
+            {/* Carrito por marca, fijo a la derecha */}
+            <CartSidebar brandSlug={brand.slug} />
           </aside>
         </section>
 
-        {/* GRID DE PRODUCTOS */}
+        {/* GRID DE PRODUCTOS (4 por fila en desktop) */}
         <section className="grid">
           {products.length === 0 ? (
             <div className="empty">No hay productos para mostrar.</div>
           ) : (
-            products.map((p) => <ProductCard key={p.id} product={p} />)
+            products.map((p) => <ProductCard key={p.id} product={p} brandSlug={brand.slug} />)
           )}
         </section>
       </div>
@@ -108,19 +121,20 @@ export default function BrandPage({ brand, products: initial }) {
           border: 1px solid var(--border, #1f2430);
           border-radius: 14px;
         }
-        .brandHeader {
+        .headerGrid {
           display: grid;
-          grid-template-columns: 1fr 340px;
+          grid-template-columns: 1fr 360px;
           gap: 16px;
           padding: 16px;
+          align-items: start;
         }
-        .left {
+        .brandRow {
           display: grid;
           grid-template-columns: 96px 1fr;
           gap: 16px;
           align-items: center;
         }
-        .logo .placeholder {
+        .logoPh {
           width: 96px;
           height: 96px;
           border-radius: 12px;
@@ -142,32 +156,23 @@ export default function BrandPage({ brand, products: initial }) {
           gap: 10px;
           margin: 4px 0 10px;
         }
-        .ig {
+        .btnGhost {
           display: inline-flex;
           gap: 6px;
           align-items: center;
           padding: 6px 10px;
           border: 1px solid var(--border, #1f2430);
           border-radius: 10px;
-        }
-        .filters {
-          display: flex;
-          gap: 8px;
+          color: inherit;
         }
         .filters input {
-          flex: 1;
+          width: 100%;
           background: #0b0d11;
           border: 1px solid var(--border, #1f2430);
           border-radius: 10px;
           padding: 8px 10px;
           color: #e8ecf8;
         }
-
-        .right {
-          min-height: 100%;
-        }
-        /* Si CartSidebar no existe, el aside queda vacío; no pasa nada. */
-
         .grid {
           margin-top: 16px;
           display: grid;
@@ -182,13 +187,9 @@ export default function BrandPage({ brand, products: initial }) {
           border: 1px dashed var(--border, #1f2430);
           border-radius: 12px;
         }
-
         @media (max-width: 1024px) {
-          .brandHeader {
+          .headerGrid {
             grid-template-columns: 1fr;
-          }
-          .right {
-            order: 2;
           }
         }
         @media (max-width: 900px) {
@@ -206,54 +207,43 @@ export default function BrandPage({ brand, products: initial }) {
   );
 }
 
-/* ---------- Targeta simple de producto: cuadrada y limpia ---------- */
-function ProductCard({ product }) {
-  const img = (product.images && product.images[0]) || product.image_url || "";
+function ProductCard({ product, brandSlug }) {
+  const img =
+    (Array.isArray(product.images) && product.images[0]) ||
+    product.image_url ||
+    "/noimg.png";
+
+  const outOfStock = !(Number(product.stock) > 0);
 
   return (
     <article className="card product">
       <div className="imgWrap">
-        {img ? (
-          // Sugerido 1:1. Next/Image recorta manteniendo calidad
-          <Image
-            src={img}
-            alt={product.name}
-            width={900}
-            height={900}
-            style={{ objectFit: "cover" }}
-            priority={false}
-          />
-        ) : (
-          <div className="placeholder" />
-        )}
+        <Image
+          src={img}
+          alt={product.name}
+          width={900}
+          height={900}
+          style={{ objectFit: "cover" }}
+          priority={false}
+        />
       </div>
 
       <div className="body">
         <h3 className="name">{product.name}</h3>
         <div className="metaLine">
           <span className="cat">{product.category || "—"}</span>
-          <span className="price">
-            {formatCurrency(product.price ?? 0)}
-          </span>
+          <span className="price">{currency(product.price ?? 0)}</span>
         </div>
         <div className="stock">
           {Number(product.stock) > 0 ? `Stock: ${product.stock}` : "Sin stock"}
         </div>
-
-        {/* Botón de agregar — mantené tu handler actual si ya lo tenés */}
         <button
-          className="btn"
-          onClick={() => {
-            // Si ya tenés un contexto/carrito, llamalo acá:
-            // addToCart(product)
-            const ev = new CustomEvent("brand:add-to-cart", {
-              detail: { product },
-            });
-            window.dispatchEvent(ev);
-          }}
-          disabled={Number(product.stock) <= 0}
+          className="btnAdd"
+          onClick={() => addToBrandCart(brandSlug, product, 1)}
+          disabled={outOfStock}
+          aria-label="Agregar al carrito"
         >
-          {Number(product.stock) > 0 ? "Agregar" : "Sin stock"}
+          {outOfStock ? "Sin stock" : "Agregar"}
         </button>
       </div>
 
@@ -268,17 +258,6 @@ function ProductCard({ product }) {
           width: 100%;
           background: #0b0d11;
           border-bottom: 1px solid var(--border, #1f2430);
-        }
-        .imgWrap :global(img) {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-        }
-        .placeholder {
-          width: 100%;
-          height: 100%;
-          background: #0f141c;
         }
         .body {
           padding: 12px;
@@ -305,7 +284,7 @@ function ProductCard({ product }) {
           font-size: 12px;
           color: #a8b3cf;
         }
-        .btn {
+        .btnAdd {
           margin-top: 6px;
           height: 36px;
           border-radius: 10px;
@@ -315,7 +294,7 @@ function ProductCard({ product }) {
           border: none;
           cursor: pointer;
         }
-        .btn[disabled] {
+        .btnAdd[disabled] {
           background: #222b36;
           color: #7a859b;
           cursor: not-allowed;
@@ -325,23 +304,11 @@ function ProductCard({ product }) {
   );
 }
 
-function formatCurrency(n) {
-  try {
-    return new Intl.NumberFormat("es-AR", {
-      style: "currency",
-      currency: "ARS",
-      maximumFractionDigits: 0,
-    }).format(Number(n) || 0);
-  } catch {
-    return `$${Number(n) || 0}`;
-  }
-}
-
 /* ---------- SSR: SOLO productos y marcas activas ---------- */
 export async function getServerSideProps(ctx) {
   const { slug } = ctx.params || {};
 
-  // 1) Marca
+  // 1) Marca (solo si está activa)
   const { data: brand, error: e1 } = await supabase
     .from("brands")
     .select(
@@ -351,20 +318,18 @@ export async function getServerSideProps(ctx) {
     .maybeSingle();
 
   if (e1 || !brand) return { notFound: true };
-  if (brand.active === false) return { notFound: true }; // bloqueá marcas inactivas
+  if (brand.active === false) return { notFound: true };
 
-  // 2) Productos activos de esa marca (orden a gusto)
+  // 2) Productos activos de esa marca
   const { data: products, error: e2 } = await supabase
     .from("products")
-    .select(
-      "id, name, price, stock, category, image_url, images, active, brand_id"
-    )
+    .select("id, name, price, stock, category, image_url, images, active")
     .eq("brand_id", brand.id)
     .eq("active", true)
     .order("id", { ascending: false });
 
   if (e2) {
-    // Si la policy RLS te bloquea, devolvemos lista vacía para no romper
+    // Si una policy bloquea, devolvemos lista vacía sin romper
     return { props: { brand, products: [] } };
   }
 
