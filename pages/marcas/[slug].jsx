@@ -1,380 +1,428 @@
+import { useRouter } from "next/router";
 import Head from "next/head";
 import Image from "next/image";
-import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import CartSidebar from "@/components/CartSidebar";
 import { addToBrandCart } from "@/utils/brandCart";
 
-function currency(n) {
-  try {
-    return new Intl.NumberFormat("es-AR", {
-      style: "currency",
-      currency: "ARS",
-      maximumFractionDigits: 0,
-    }).format(Number(n || 0));
-  } catch {
-    return `$${n || 0}`;
-  }
+// Util: arma galería a partir de products.images (array) o image_url única
+function buildGallery(p) {
+  if (Array.isArray(p.images) && p.images.length > 0) return p.images;
+  if (p.image_url) return [p.image_url];
+  return ["/noimg.png"];
 }
 
-export default function BrandView({ brand, products }) {
-  const [q, setQ] = useState("");
+function ProductCard({ product, brandSlug, onAdded }) {
+  const gallery = buildGallery(product);
+  const [idx, setIdx] = useState(0);
+  const canPrev = idx > 0;
+  const canNext = idx < gallery.length - 1;
 
-  const list = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return products;
-    return products.filter(
-      (p) =>
-        (p.name || "").toLowerCase().includes(s) ||
-        (p.category || "").toLowerCase().includes(s)
-    );
-  }, [q, products]);
+  const prev = () => canPrev && setIdx((i) => i - 1);
+  const next = () => canNext && setIdx((i) => i + 1);
 
   return (
-    <>
-      <Head>
-        <title>
-          {brand?.name ? `${brand.name} — CABURE.STORE` : "CABURE.STORE"}
-        </title>
-        {brand?.logo_url ? (
-          <meta property="og:image" content={brand.logo_url} />
-        ) : null}
-      </Head>
+    <article className="p-card">
+      <div className="p-img">
+        <button className="nav left" onClick={prev} disabled={!canPrev} aria-label="Anterior">
+          ‹
+        </button>
+        <div className="frame">
+          <Image
+            src={gallery[idx]}
+            alt={product.name || "Producto"}
+            fill
+            sizes="(max-width: 900px) 50vw, 300px"
+            style={{ objectFit: "cover" }}
+          />
+        </div>
+        <button className="nav right" onClick={next} disabled={!canNext} aria-label="Siguiente">
+          ›
+        </button>
+      </div>
 
-      <div className="wrap">
-        {/* HEADER de marca (igual estilo, solo agrego carrito a la derecha) */}
-        <section className="brandCard">
-          <div className="left">
-            <div className="logoBox">
-              {brand?.logo_url ? (
-                <Image
-                  src={brand.logo_url}
-                  alt={brand.name}
-                  width={120}
-                  height={120}
-                  className="logo"
-                  priority
-                />
-              ) : (
-                <div className="logo ph" />
-              )}
-            </div>
-
-            <div className="text">
-              <h1 className="title">{brand?.name || "Marca"}</h1>
-              {brand?.description ? (
-                <p className="desc">{brand.description}</p>
-              ) : null}
-              <div className="links">
-                {brand?.instagram_url ? (
-                  <Link
-                    href={brand.instagram_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="pill"
-                    aria-label="Instagram"
-                  >
-                    <span style={{ marginRight: 6 }}>📷</span> Instagram
-                  </Link>
-                ) : null}
-              </div>
-
-              <div className="filters">
-                <button className="chip chip--on">Todas</button>
-                {/* Si luego quieres categorías, aquí van más chips */}
-                <input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="Buscar producto…"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Carrito ACÁ, a la derecha del header */}
-          <div className="right">
-            {brand?.slug ? <CartSidebar brandSlug={brand.slug} compact /> : null}
-          </div>
-        </section>
-
-        {/* GRID de productos 4 por fila, imágenes cuadradas */}
-        <section className="grid">
-          {list.length === 0 ? (
-            <div className="empty">No hay productos para mostrar.</div>
-          ) : (
-            list.map((p) => (
-              <article className="card" key={p.id}>
-                <div className="imgWrap">
-                  <Image
-                    src={
-                      (Array.isArray(p.images) && p.images[0]) ||
-                      p.image_url ||
-                      "/noimg.png"
-                    }
-                    alt={p.name}
-                    width={900}
-                    height={900}
-                    style={{ objectFit: "cover" }}
-                  />
-                </div>
-
-                <div className="body">
-                  <h3 className="name">{p.name}</h3>
-                  <div className="meta">
-                    <span className="cat">{p.category || "—"}</span>
-                    <span className="price">{currency(p.price || 0)}</span>
-                  </div>
-                  <div className="stock">
-                    {Number(p.stock) > 0 ? `Stock: ${p.stock}` : "Sin stock"}
-                  </div>
-                  <button
-                    className="btn"
-                    onClick={() => addToBrandCart(brand.slug, p, 1)}
-                    disabled={!(Number(p.stock) > 0)}
-                  >
-                    {Number(p.stock) > 0 ? "Agregar" : "Sin stock"}
-                  </button>
-                </div>
-              </article>
-            ))
-          )}
-        </section>
+      <div className="p-body">
+        <div className="p-title">{product.name}</div>
+        <div className="p-meta">
+          <span className="tag">{product.category || "General"}</span>
+          <span className="stock">Stock: {Number(product.stock || 0)}</span>
+        </div>
+        <div className="p-price">${Number(product.price || 0)}</div>
+        <button
+          className="btn"
+          disabled={!product.active || Number(product.stock || 0) <= 0}
+          onClick={() => {
+            addToBrandCart(brandSlug, product, 1);
+            onAdded?.();
+          }}
+        >
+          Agregar
+        </button>
       </div>
 
       <style jsx>{`
-        .wrap {
-          max-width: 1200px;
-          margin: 24px auto;
-          padding: 0 16px;
-        }
-        .brandCard {
-          background: #0f1115;
-          border: 1px solid #1f2430;
-          border-radius: 16px;
-          padding: 18px;
-          margin-bottom: 18px;
-          display: grid;
-          grid-template-columns: 1fr 360px;
-          gap: 18px;
-          align-items: start;
-        }
-        .left {
-          display: grid;
-          grid-template-columns: 140px 1fr;
-          gap: 16px;
-          align-items: start;
-        }
-        .logoBox {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .logo {
-          width: 120px;
-          height: 120px;
-          border-radius: 12px;
+        .p-card {
           background: #0b0d11;
-          border: 1px solid #1f2430;
-          object-fit: contain;
-        }
-        .logo.ph {
-          width: 120px;
-          height: 120px;
-          border-radius: 12px;
-          background: #0b0d11;
-          border: 1px dashed #1f2430;
-        }
-        .text .title {
-          margin: 0 0 4px;
-          font-size: 28px;
-          line-height: 1.1;
-        }
-        .desc {
-          margin: 0 0 10px;
-          color: #a8b3cf;
-          max-width: 70ch;
-          font-size: 15px;
-        }
-        .links {
-          display: flex;
-          gap: 10px;
-          margin-bottom: 8px;
-        }
-        .pill {
-          height: 32px;
-          padding: 0 12px;
-          border-radius: 100px;
-          background: #0b0d11;
-          border: 1px solid #1f2430;
-          display: inline-flex;
-          align-items: center;
-        }
-        .filters {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          margin-top: 4px;
-        }
-        .chip {
-          height: 32px;
-          padding: 0 12px;
-          border-radius: 999px;
-          background: #0b0d11;
-          border: 1px solid #1f2430;
-        }
-        .chip--on {
-          background: #00f0b5;
-          color: #0b0d11;
-          border-color: #00f0b5;
-          font-weight: 700;
-        }
-        .filters input {
-          flex: 1;
-          height: 32px;
-          border-radius: 10px;
-          background: #0b0d11;
-          border: 1px solid #1f2430;
-          padding: 0 10px;
-          color: #e8ecf8;
-        }
-        .right {
-          min-width: 0;
-        }
-
-        .grid {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 16px;
-        }
-        .empty {
-          grid-column: 1 / -1;
-          border: 1px dashed #1f2430;
-          border-radius: 12px;
-          padding: 24px;
-          text-align: center;
-          color: #a8b3cf;
-        }
-
-        .card {
-          background: #0f1115;
           border: 1px solid #1f2430;
           border-radius: 14px;
-          display: grid;
-          grid-template-rows: auto 1fr;
           overflow: hidden;
+          display: grid;
+          grid-template-rows: 1fr auto;
         }
-        .imgWrap {
-          aspect-ratio: 1 / 1; /* cuadrada */
-          width: 100%;
-          background: #0b0d11;
+        .p-img {
+          position: relative;
+          height: 0;
+          padding-bottom: 100%; /* cuadrado */
+          background: #0f1115;
+        }
+        .frame {
+          position: absolute;
+          inset: 0;
           border-bottom: 1px solid #1f2430;
         }
-        .body {
-          padding: 12px;
+        .nav {
+          position: absolute;
+          top: 50%;
+          transform: translateY(-50%);
+          width: 34px;
+          height: 34px;
+          border-radius: 50%;
+          border: 1px solid #263046;
+          background: #0b0d11;
+          color: #e8ecf8;
+          display: grid;
+          place-items: center;
+          cursor: pointer;
+        }
+        .nav[disabled] {
+          opacity: 0.35;
+          cursor: not-allowed;
+        }
+        .left {
+          left: 8px;
+        }
+        .right {
+          right: 8px;
+        }
+        .p-body {
+          padding: 10px 12px 12px;
           display: grid;
           gap: 6px;
         }
-        .name {
-          margin: 0;
-          font-size: 15px;
-          line-height: 1.3;
-        }
-        .meta {
-          display: flex;
-          justify-content: space-between;
-          gap: 8px;
-          color: #a8b3cf;
-          font-size: 13px;
-        }
-        .price {
-          color: #e8ecf8;
+        .p-title {
           font-weight: 600;
+          font-size: 14px;
+          line-height: 1.2;
         }
-        .stock {
+        .p-meta {
+          display: flex;
+          gap: 10px;
           font-size: 12px;
           color: #a8b3cf;
         }
+        .tag {
+          border: 1px solid #263046;
+          padding: 2px 6px;
+          border-radius: 999px;
+        }
+        .stock {
+          opacity: 0.8;
+        }
+        .p-price {
+          font-weight: 700;
+        }
         .btn {
-          margin-top: 6px;
           height: 36px;
           border-radius: 10px;
           background: #00f0b5;
           color: #0b0d11;
           font-weight: 700;
           border: none;
+          padding: 0 12px;
           cursor: pointer;
         }
         .btn[disabled] {
-          background: #222b36;
+          background: #1e2636;
           color: #7a859b;
           cursor: not-allowed;
         }
+      `}</style>
+    </article>
+  );
+}
 
-        @media (max-width: 1050px) {
-          .brandCard {
-            grid-template-columns: 1fr;
-          }
+export default function BrandPage() {
+  const router = useRouter();
+  const { slug } = router.query;
+
+  const [brand, setBrand] = useState(null);
+  const [loadingBrand, setLoadingBrand] = useState(true);
+
+  const [products, setProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+
+  // 1) cargar marca por slug
+  useEffect(() => {
+    if (!slug) return;
+    (async () => {
+      setLoadingBrand(true);
+      const { data, error } = await supabase
+        .from("brands")
+        .select("id, name, slug, description, instagram_url, logo_url, color, active")
+        .eq("slug", slug)
+        .maybeSingle();
+      if (!error) setBrand(data);
+      setLoadingBrand(false);
+    })();
+  }, [slug]);
+
+  // 2) cargar productos activos, con stock > 0
+  useEffect(() => {
+    if (!brand?.id) return;
+    (async () => {
+      setLoadingProducts(true);
+      const { data, error } = await supabase
+        .from("products")
+        .select("id, name, price, stock, active, category, image_url, images")
+        .eq("brand_id", brand.id)
+        .eq("active", true)
+        .gt("stock", 0)
+        .order("name", { ascending: true });
+      if (!error) setProducts(data || []);
+      setLoadingProducts(false);
+    })();
+  }, [brand?.id]);
+
+  // 3) categorías disponibles (derivadas de lo que hay)
+  const categories = useMemo(() => {
+    const set = new Set();
+    for (const p of products) if (p.category) set.add(p.category);
+    return Array.from(set).sort();
+  }, [products]);
+
+  // 4) filtrado/busqueda
+  const filtered = useMemo(() => {
+    const term = (search || "").toLowerCase().trim();
+    return products.filter((p) => {
+      const okCat = category === "all" ? true : (p.category || "") === category;
+      const okTerm = term ? (p.name || "").toLowerCase().includes(term) : true;
+      return okCat && okTerm;
+    });
+  }, [products, search, category]);
+
+  // 5) estilos de color por marca (opcional)
+  const accent = brand?.color || "#00f0b5";
+
+  return (
+    <>
+      <Head>
+        <title>{brand?.name ? `${brand.name} — CABURE.STORE` : "Marca — CABURE.STORE"}</title>
+      </Head>
+
+      <main className="wrap">
+        {/* HEADER PERFIL + CARRITO */}
+        <section className="header">
+          <div className="logo">
+            <div className="img">
+              <Image
+                src={brand?.logo_url || "/noimg.png"}
+                alt={brand?.name || "Marca"}
+                fill
+                sizes="120px"
+                style={{ objectFit: "contain" }}
+              />
+            </div>
+          </div>
+
+          <div className="meta">
+            <h1>{brand?.name || "Marca"}</h1>
+            {brand?.description ? (
+              <p className="desc">{brand.description}</p>
+            ) : (
+              <p className="desc muted">Sin descripción.</p>
+            )}
+            {!!brand?.instagram_url && (
+              <a
+                href={brand.instagram_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ig"
+                style={{ borderColor: accent, color: accent }}
+              >
+                <span style={{ fontSize: 18, marginRight: 6 }}>📷</span>
+                Instagram
+              </a>
+            )}
+          </div>
+
+          <div className="cart">
+            {/* carrito a la derecha del header */}
+            <CartSidebar brandSlug={brand?.slug} compact />
+          </div>
+        </section>
+
+        {/* TOOLBAR arriba del catálogo */}
+        <section className="toolbar">
+          <div className="pills">
+            <button
+              className={`pill ${category === "all" ? "on" : ""}`}
+              onClick={() => setCategory("all")}
+            >
+              Todas
+            </button>
+            {categories.map((c) => (
+              <button
+                key={c}
+                className={`pill ${category === c ? "on" : ""}`}
+                onClick={() => setCategory(c)}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+
+          <input
+            className="search"
+            placeholder="Buscar producto…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </section>
+
+        {/* CATÁLOGO */}
+        <section className="grid">
+          {loadingProducts ? (
+            <div className="hint">Cargando catálogo…</div>
+          ) : filtered.length === 0 ? (
+            <div className="hint">No hay productos para mostrar.</div>
+          ) : (
+            filtered.map((p) => (
+              <ProductCard
+                key={p.id}
+                product={p}
+                brandSlug={brand?.slug}
+                onAdded={() => {}}
+              />
+            ))
+          )}
+        </section>
+      </main>
+
+      <style jsx>{`
+        .wrap {
+          max-width: 1200px;
+          padding: 18px 16px 60px;
+          margin: 0 auto;
         }
-        @media (max-width: 800px) {
-          .left {
-            grid-template-columns: 100px 1fr;
-          }
-          .logo {
-            width: 100px;
-            height: 100px;
-          }
-          .grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-          }
+        /* Header en 3 columnas: logo | info | carrito */
+        .header {
+          display: grid;
+          grid-template-columns: 120px 1fr 360px;
+          gap: 16px;
+          background: #0b0d11;
+          border: 1px solid #1f2430;
+          border-radius: 16px;
+          padding: 14px;
+          margin-bottom: 18px;
         }
-        @media (max-width: 600px) {
-          .grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+        .logo .img {
+          position: relative;
+          width: 100%;
+          height: 0;
+          padding-bottom: 100%;
+          background: #0f1115;
+          border: 1px solid #1f2430;
+          border-radius: 12px;
+        }
+        .meta h1 {
+          margin: 2px 0 6px 0;
+          font-size: 22px;
+        }
+        .desc {
+          margin: 0 0 10px 0;
+          line-height: 1.4;
+          color: #c7d2e1;
+        }
+        .desc.muted {
+          color: #99a8c2;
+        }
+        .ig {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          border: 1px solid;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-weight: 600;
+        }
+        .cart {
+          min-width: 0;
+        }
+
+        /* Toolbar encima del grid */
+        .toolbar {
+          display: grid;
+          grid-template-columns: 1fr 240px;
+          gap: 12px;
+          align-items: center;
+          margin: 8px 0 14px;
+        }
+        .pills {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .pill {
+          height: 34px;
+          border-radius: 999px;
+          border: 1px solid #263046;
+          background: #0b0d11;
+          color: #e8ecf8;
+          padding: 0 12px;
+          cursor: pointer;
+        }
+        .pill.on {
+          background: #00f0b5;
+          color: #0b0d11;
+          border-color: #00f0b5;
+          font-weight: 700;
+        }
+        .search {
+          height: 36px;
+          border-radius: 10px;
+          border: 1px solid #263046;
+          background: #0b0d11;
+          color: #e8ecf8;
+          padding: 0 10px;
+        }
+
+        /* Grid del catálogo ~4 por fila en desktop */
+        .grid {
+          display: grid;
+          gap: 14px;
+          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        }
+        .hint {
+          color: #a8b3cf;
+          border: 1px dashed #263046;
+          border-radius: 12px;
+          padding: 18px;
+          text-align: center;
+        }
+
+        @media (max-width: 1024px) {
+          .header {
+            grid-template-columns: 120px 1fr;
+          }
+          .cart {
+            grid-column: 1 / -1;
           }
         }
       `}</style>
     </>
   );
-}
-
-/** SSR: trae la marca (activa) y los productos activos */
-export async function getServerSideProps(ctx) {
-  const { slug } = ctx.params || {};
-
-  // Marca
-  const { data: brand, error: e1 } = await supabase
-    .from("brands")
-    .select(
-      "id, name, slug, description, instagram_url, logo_url, color, active"
-    )
-    .eq("slug", slug)
-    .maybeSingle();
-
-  if (e1) {
-    console.error("SSR brands error:", e1);
-  }
-  if (!brand || brand.active === false) {
-    // No pública o no existe => 404 real.
-    return { notFound: true };
-  }
-
-  // Productos activos (de esta marca)
-  const { data: products, error: e2 } = await supabase
-    .from("products")
-    .select("id, name, price, stock, category, image_url, images, active")
-    .eq("brand_id", brand.id)
-    .eq("active", true)
-    .order("id", { ascending: false });
-
-  if (e2) {
-    console.error("SSR products error:", e2);
-  }
-
-  return {
-    props: {
-      brand,
-      products: products || [],
-    },
-  };
 }
