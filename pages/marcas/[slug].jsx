@@ -18,20 +18,19 @@ export default function BrandCatalog() {
   const [brand, setBrand] = useState(null);
   const [products, setProducts] = useState(null);
 
-  // categoría activa (“Todas” por defecto) y búsqueda simple
+  // filtro dinámico y búsqueda
   const [filter, setFilter] = useState("Todas");
   const [q, setQ] = useState("");
 
-  // índice de imagen visible por producto (para las flechas)
+  // índice de imagen visible por producto
   const [imgIdx, setImgIdx] = useState({}); // { [productId]: number }
 
-  // cartel de confirmación al agregar
+  // toast simple de “agregado”
   const [addedId, setAddedId] = useState(null);
 
   useEffect(() => {
     if (!slug) return;
     (async () => {
-      // cargar brand activa
       const { data: br } = await supabase
         .from("brands")
         .select("id,name,slug,description,logo_url,color,instagram_url,active,deleted_at")
@@ -41,7 +40,6 @@ export default function BrandCatalog() {
         .maybeSingle();
       setBrand(br || null);
 
-      // cargar productos públicos (activos, stock > 0, no borrados)
       if (br?.id) {
         const { data: prods } = await supabase
           .from("products")
@@ -58,7 +56,7 @@ export default function BrandCatalog() {
     })();
   }, [slug]);
 
-  // categorías dinámicas (solo las que realmente existen en los productos de la marca)
+  // categorías dinámicas (solo las que existen para esta marca)
   const categories = useMemo(() => {
     const set = new Set();
     (products || []).forEach((p) => {
@@ -68,7 +66,7 @@ export default function BrandCatalog() {
     return ["Todas", ...Array.from(set)];
   }, [products]);
 
-  // listado visible según filtro/búsqueda
+  // listado visible según filtro y búsqueda
   const visible = useMemo(() => {
     let list = products || [];
     if (filter && filter !== "Todas") {
@@ -84,12 +82,14 @@ export default function BrandCatalog() {
   // helpers de galería
   const getGallery = (p) => {
     const arr = Array.isArray(p.image_urls) && p.image_urls.length ? p.image_urls : (p.image_url ? [p.image_url] : []);
-    return arr.slice(0, 5); // por si guardaste más, recortamos a 5
+    return arr.slice(0, 5);
   };
   const currentImgFor = (p) => {
     const gal = getGallery(p);
     const idx = imgIdx[p.id] ?? 0;
-    return gal[gal.length ? (idx % gal.length + gal.length) % gal.length : 0] || null;
+    if (!gal.length) return null;
+    const norm = ((idx % gal.length) + gal.length) % gal.length;
+    return gal[norm];
   };
   const goLeft = (p) => {
     const gal = getGallery(p);
@@ -102,15 +102,14 @@ export default function BrandCatalog() {
     setImgIdx((prev) => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
   };
 
-  // carrito por marca en localStorage
+  // carrito por marca en localStorage (no redirige)
   const addToCart = (p) => {
     if (!brand?.id) return;
     const key = `cart:${brand.id}`;
-    const raw = (typeof window !== "undefined") ? window.localStorage.getItem(key) : null;
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(key) : null;
     let cart = [];
     try { cart = raw ? JSON.parse(raw) : []; } catch { cart = []; }
 
-    // si ya existe el ítem, sumamos qty (sin pasar stock)
     const idx = cart.findIndex((it) => it.product_id === p.id);
     if (idx >= 0) {
       const max = Math.max(1, Number(p.stock || 1));
@@ -126,13 +125,9 @@ export default function BrandCatalog() {
       });
     }
     window.localStorage.setItem(key, JSON.stringify(cart));
-
-    // disparar un evento por si tu header escucha “cart:updated”
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("cart:updated", { detail: { brandId: brand.id, count: cart.length } }));
     }
-
-    // feedback visual
     setAddedId(p.id);
     setTimeout(() => setAddedId(null), 1200);
   };
@@ -150,7 +145,7 @@ export default function BrandCatalog() {
         </div>
       ) : (
         <>
-          {/* header de marca */}
+          {/* Header de marca */}
           <section className="card" style={{ padding: 16, marginTop: 12, borderColor: brand.color || "#222" }}>
             <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ width: 120 }}>
@@ -180,7 +175,7 @@ export default function BrandCatalog() {
               </div>
             </div>
 
-            {/* filtros dinámicos y búsqueda */}
+            {/* filtros y búsqueda */}
             <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
               <div className="chips" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {categories.map((c) => (
@@ -206,7 +201,7 @@ export default function BrandCatalog() {
             </div>
           </section>
 
-          {/* grilla 4 por fila */}
+          {/* grilla de productos 4 por fila */}
           <section style={{ marginTop: 12 }}>
             {!products ? (
               <div className="skel" style={{ height: 200 }} />
@@ -220,14 +215,20 @@ export default function BrandCatalog() {
                   const gal = getGallery(p);
                   const current = currentImgFor(p);
                   const showArrows = gal.length > 1;
+                  const activeDot = (() => {
+                    if (!gal.length) return 0;
+                    const idx = imgIdx[p.id] ?? 0;
+                    return ((idx % gal.length) + gal.length) % gal.length;
+                  })();
+
                   return (
                     <article key={p.id} className="card" style={{ padding: 12 }}>
-                      <div style={{ position: "relative" }}>
+                      <div className="galleryWrap">
                         <ImageBox src={current} alt={p.name} ratio="4:3" />
                         {showArrows && (
                           <>
                             <button
-                              className="nav-btn left"
+                              className="navBtn navLeft"
                               aria-label="Imagen anterior"
                               onClick={() => goLeft(p)}
                               title="Anterior"
@@ -235,7 +236,7 @@ export default function BrandCatalog() {
                               ◀
                             </button>
                             <button
-                              className="nav-btn right"
+                              className="navBtn navRight"
                               aria-label="Siguiente imagen"
                               onClick={() => goRight(p)}
                               title="Siguiente"
@@ -243,10 +244,9 @@ export default function BrandCatalog() {
                               ▶
                             </button>
                             <div className="dots">
-                              {gal.map((_, i) => {
-                                const at = ((imgIdx[p.id] ?? 0) % gal.length + gal.length) % gal.length;
-                                return <span key={i} className={`dot ${i === at ? "on" : ""}`} />;
-                              })}
+                              {gal.map((_, i) => (
+                                <span key={i} className={`dot ${i === activeDot ? "dotOn" : ""}`} />
+                              ))}
                             </div>
                           </>
                         )}
@@ -267,43 +267,6 @@ export default function BrandCatalog() {
                           {addedId === p.id ? "Agregado ✓" : "Agregar"}
                         </button>
                       </div>
-
-                      <style jsx>{`
-                        .nav-btn {
-                          position: absolute;
-                          top: 50%;
-                          transform: translateY(-50%);
-                          background: rgba(0,0,0,0.55);
-                          color: #fff;
-                          border: 1px solid rgba(255,255,255,0.25);
-                          border-radius: 999px;
-                          width: 32px;
-                          height: 32px;
-                          display: grid;
-                          place-items: center;
-                          cursor: pointer;
-                          opacity: 0.9;
-                        }
-                        .nav-btn:hover { opacity: 1; }
-                        .nav-btn.left { left: 8px; }
-                        .nav-btn.right { right: 8px; }
-                        .dots {
-                          position: absolute;
-                          bottom: 6px;
-                          left: 0;
-                          right: 0;
-                          display: flex;
-                          justify-content: center;
-                          gap: 6px;
-                        }
-                        .dot {
-                          width: 6px;
-                          height: 6px;
-                          border-radius: 999px;
-                          background: rgba(255,255,255,0.35);
-                        }
-                        .dot.on { background: rgba(255,255,255,0.9); }
-                      `}</style>
                     </article>
                   );
                 })}
@@ -311,7 +274,7 @@ export default function BrandCatalog() {
             )}
           </section>
 
-          {/* estilos responsivos para 4-col */}
+          {/* estilos (un solo bloque) */}
           <style jsx>{`
             .grid.grid-4 {
               display: grid;
@@ -326,6 +289,43 @@ export default function BrandCatalog() {
             @media (max-width: 520px) {
               .grid.grid-4 { grid-template-columns: 1fr; }
             }
+
+            .galleryWrap { position: relative; }
+            .navBtn {
+              position: absolute;
+              top: 50%;
+              transform: translateY(-50%);
+              background: rgba(0,0,0,0.55);
+              color: #fff;
+              border: 1px solid rgba(255,255,255,0.25);
+              border-radius: 999px;
+              width: 32px;
+              height: 32px;
+              display: grid;
+              place-items: center;
+              cursor: pointer;
+              opacity: 0.9;
+            }
+            .navBtn:hover { opacity: 1; }
+            .navLeft { left: 8px; }
+            .navRight { right: 8px; }
+
+            .dots {
+              position: absolute;
+              bottom: 6px;
+              left: 0;
+              right: 0;
+              display: flex;
+              justify-content: center;
+              gap: 6px;
+            }
+            .dot {
+              width: 6px;
+              height: 6px;
+              border-radius: 999px;
+              background: rgba(255,255,255,0.35);
+            }
+            .dotOn { background: rgba(255,255,255,0.9); }
           `}</style>
         </>
       )}
