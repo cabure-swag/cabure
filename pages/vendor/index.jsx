@@ -85,7 +85,6 @@ function VendorInner() {
           setBrands(data || []);
           if (!brandId && (data || []).length) setBrandId(data[0].id);
         } else if (role === "vendor") {
-          // traer marcas vinculadas al user
           const uid = session.user.id;
           const { data: bu, error: e1 } = await supabase
             .from("brand_users")
@@ -122,7 +121,7 @@ function VendorInner() {
     try {
       const { data, error } = await supabase
         .from("products")
-        .select("id,brand_id,name,price,image_url,category,subcategory,active,deleted_at,created_at")
+        .select("id,brand_id,name,price,image_url,category,subcategory,active,deleted_at,created_at,stock")
         .eq("brand_id", bid)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -140,7 +139,6 @@ function VendorInner() {
     if (!bid) return;
     setOrdersLoading(true);
     try {
-      // pedidos
       const { data: ods, error } = await supabase
         .from("orders")
         .select("id,brand_id,buyer_id,total,status,payment_method,mp_preference_id,mp_payment_id,created_at")
@@ -349,6 +347,7 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
   const [price, setPrice] = useState("");
   const [category, setCategory] = useState("");
   const [subcategory, setSubcategory] = useState("");
+  const [stock, setStock] = useState("0");
   const [imageFile, setImageFile] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -357,6 +356,8 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
     if (!name.trim()) { alert("Nombre obligatorio"); return; }
     const priceNum = Number(price || 0);
     if (Number.isNaN(priceNum) || priceNum < 0) { alert("Precio inválido"); return; }
+    let stockNum = parseInt(stock || "0", 10);
+    if (Number.isNaN(stockNum) || stockNum < 0) stockNum = 0;
 
     setSaving(true);
     try {
@@ -381,7 +382,8 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
         category: category || null,
         subcategory: subcategory || null,
         image_url,
-        active: true,
+        stock: stockNum,
+        active: stockNum > 0, // si no hay stock, no lo publiques
       };
       const { error } = await supabase.from("products").insert(payload);
       if (error) throw error;
@@ -418,7 +420,14 @@ function CreateProductForm({ brandId, onCancel, onCreated }) {
           <label className="input-label">Subcategoría</label>
           <input className="input" value={subcategory} onChange={(e) => setSubcategory(e.target.value)} placeholder="Oversize, Slim, etc." />
         </div>
-        <div style={{ gridColumn: "1 / -1" }}>
+        <div>
+          <label className="input-label">Stock *</label>
+          <input className="input" type="number" min="0" step="1" value={stock} onChange={(e) => setStock(e.target.value)} />
+          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+            Si el stock es 0, el producto quedará inactivo automáticamente.
+          </div>
+        </div>
+        <div>
           <label className="input-label">Imagen</label>
           <input className="input" type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} />
         </div>
@@ -438,6 +447,7 @@ function ProductCard({ product, onChanged }) {
   const [price, setPrice] = useState(product.price || 0);
   const [category, setCategory] = useState(product.category || "");
   const [subcategory, setSubcategory] = useState(product.subcategory || "");
+  const [stock, setStock] = useState(Number.isFinite(product.stock) ? product.stock : 0);
   const [active, setActive] = useState(!!product.active);
   const [imageUrl, setImageUrl] = useState(product.image_url || "");
   const [saving, setSaving] = useState(false);
@@ -447,6 +457,7 @@ function ProductCard({ product, onChanged }) {
     setPrice(product.price || 0);
     setCategory(product.category || "");
     setSubcategory(product.subcategory || "");
+    setStock(Number.isFinite(product.stock) ? product.stock : 0);
     setActive(!!product.active);
     setImageUrl(product.image_url || "");
   }, [product.id]);
@@ -454,7 +465,7 @@ function ProductCard({ product, onChanged }) {
   async function save(patch) {
     try {
       setSaving(true);
-      const body =
+      let body =
         patch ??
         {
           name: name.trim(),
@@ -462,8 +473,16 @@ function ProductCard({ product, onChanged }) {
           category: category || null,
           subcategory: subcategory || null,
           image_url: imageUrl || null,
+          stock: Number.isFinite(stock) && stock >= 0 ? stock : 0,
           active,
         };
+
+      // si stock es 0 y estaba activo, forzamos inactivo
+      if ((body.stock ?? stock) === 0) {
+        body.active = false;
+        setActive(false);
+      }
+
       const { error } = await supabase.from("products").update(body).eq("id", product.id);
       if (error) throw error;
       await onChanged?.();
@@ -514,15 +533,25 @@ function ProductCard({ product, onChanged }) {
 
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="row" style={{ alignItems: "center", gap: 8 }}>
+      <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <strong style={{ fontSize: 16 }}>{name || "(Sin nombre)"}</strong>
         <div className="badge">{money(price)}</div>
+        <div className="badge" title="Stock disponible">Stock: {Number.isFinite(stock) ? stock : 0}</div>
         <div style={{ flex: 1 }} />
         <label className="chip">
           <input
             type="checkbox"
             checked={active}
-            onChange={(e) => { setActive(e.target.checked); save({ active: e.target.checked }); }}
+            onChange={(e) => { 
+              const v = e.target.checked;
+              // si no hay stock, no permitir activarlo
+              if (v && (Number(stock) <= 0)) {
+                alert("No podés activar un producto con stock 0.");
+                return;
+              }
+              setActive(v);
+              save({ active: v });
+            }}
           /> activo
         </label>
         <button className="btn danger xsmall" onClick={softDelete}>Eliminar</button>
@@ -544,6 +573,24 @@ function ProductCard({ product, onChanged }) {
         <div>
           <label className="input-label">Subcategoría</label>
           <input className="input" value={subcategory} onChange={(e) => setSubcategory(e.target.value)} onBlur={() => save()} />
+        </div>
+        <div>
+          <label className="input-label">Stock</label>
+          <input
+            className="input"
+            type="number"
+            min="0"
+            step="1"
+            value={Number.isFinite(stock) ? stock : 0}
+            onChange={(e) => {
+              const v = parseInt(e.target.value || "0", 10);
+              setStock(Number.isNaN(v) || v < 0 ? 0 : v);
+            }}
+            onBlur={() => save()}
+          />
+          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+            Cuando el stock llegue a 0, el producto se desactiva solo.
+          </div>
         </div>
         <div style={{ gridColumn: "1 / -1" }}>
           <label className="input-label">Imagen</label>
