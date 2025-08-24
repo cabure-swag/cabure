@@ -6,7 +6,6 @@ import { supabase } from "@/lib/supabaseClient";
 import CartSidebar from "@/components/CartSidebar";
 import { addToBrandCart } from "@/utils/brandCart";
 
-// Util: arma galería a partir de products.images (array) o image_url única
 function buildGallery(p) {
   if (Array.isArray(p.images) && p.images.length > 0) return p.images;
   if (p.image_url) return [p.image_url];
@@ -19,15 +18,14 @@ function ProductCard({ product, brandSlug, onAdded }) {
   const canPrev = idx > 0;
   const canNext = idx < gallery.length - 1;
 
-  const prev = () => canPrev && setIdx((i) => i - 1);
-  const next = () => canNext && setIdx((i) => i + 1);
-
   return (
     <article className="p-card">
       <div className="p-img">
-        <button className="nav left" onClick={prev} disabled={!canPrev} aria-label="Anterior">
-          ‹
-        </button>
+        {canPrev && (
+          <button className="nav left" onClick={() => setIdx(idx - 1)} aria-label="Anterior">
+            ‹
+          </button>
+        )}
         <div className="frame">
           <Image
             src={gallery[idx]}
@@ -37,15 +35,16 @@ function ProductCard({ product, brandSlug, onAdded }) {
             style={{ objectFit: "cover" }}
           />
         </div>
-        <button className="nav right" onClick={next} disabled={!canNext} aria-label="Siguiente">
-          ›
-        </button>
+        {canNext && (
+          <button className="nav right" onClick={() => setIdx(idx + 1)} aria-label="Siguiente">
+            ›
+          </button>
+        )}
       </div>
 
       <div className="p-body">
         <div className="p-title">{product.name}</div>
         <div className="p-meta">
-          <span className="tag">{product.category || "General"}</span>
           <span className="stock">Stock: {Number(product.stock || 0)}</span>
         </div>
         <div className="p-price">${Number(product.price || 0)}</div>
@@ -67,13 +66,13 @@ function ProductCard({ product, brandSlug, onAdded }) {
           border: 1px solid #1f2430;
           border-radius: 14px;
           overflow: hidden;
-          display: grid;
-          grid-template-rows: 1fr auto;
+          display: flex;
+          flex-direction: column;
         }
         .p-img {
           position: relative;
-          height: 0;
-          padding-bottom: 100%; /* cuadrado */
+          width: 100%;
+          padding-bottom: 100%;
           background: #0f1115;
         }
         .frame {
@@ -85,19 +84,16 @@ function ProductCard({ product, brandSlug, onAdded }) {
           position: absolute;
           top: 50%;
           transform: translateY(-50%);
-          width: 34px;
-          height: 34px;
+          width: 32px;
+          height: 32px;
           border-radius: 50%;
           border: 1px solid #263046;
-          background: #0b0d11;
-          color: #e8ecf8;
+          background: rgba(0, 0, 0, 0.6);
+          color: #fff;
           display: grid;
           place-items: center;
           cursor: pointer;
-        }
-        .nav[disabled] {
-          opacity: 0.35;
-          cursor: not-allowed;
+          z-index: 5;
         }
         .left {
           left: 8px;
@@ -106,31 +102,22 @@ function ProductCard({ product, brandSlug, onAdded }) {
           right: 8px;
         }
         .p-body {
-          padding: 10px 12px 12px;
-          display: grid;
+          padding: 10px 12px;
+          display: flex;
+          flex-direction: column;
           gap: 6px;
         }
         .p-title {
           font-weight: 600;
           font-size: 14px;
-          line-height: 1.2;
         }
         .p-meta {
-          display: flex;
-          gap: 10px;
           font-size: 12px;
           color: #a8b3cf;
         }
-        .tag {
-          border: 1px solid #263046;
-          padding: 2px 6px;
-          border-radius: 999px;
-        }
-        .stock {
-          opacity: 0.8;
-        }
         .p-price {
           font-weight: 700;
+          margin-bottom: 4px;
         }
         .btn {
           height: 36px;
@@ -165,7 +152,6 @@ export default function BrandPage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
 
-  // 1) cargar marca por slug
   useEffect(() => {
     if (!slug) return;
     (async () => {
@@ -180,7 +166,6 @@ export default function BrandPage() {
     })();
   }, [slug]);
 
-  // 2) cargar productos activos, con stock > 0
   useEffect(() => {
     if (!brand?.id) return;
     (async () => {
@@ -197,14 +182,12 @@ export default function BrandPage() {
     })();
   }, [brand?.id]);
 
-  // 3) categorías disponibles (derivadas de lo que hay)
   const categories = useMemo(() => {
     const set = new Set();
     for (const p of products) if (p.category) set.add(p.category);
     return Array.from(set).sort();
   }, [products]);
 
-  // 4) filtrado/busqueda
   const filtered = useMemo(() => {
     const term = (search || "").toLowerCase().trim();
     return products.filter((p) => {
@@ -214,9 +197,6 @@ export default function BrandPage() {
     });
   }, [products, search, category]);
 
-  // 5) estilos de color por marca (opcional)
-  const accent = brand?.color || "#00f0b5";
-
   return (
     <>
       <Head>
@@ -224,18 +204,15 @@ export default function BrandPage() {
       </Head>
 
       <main className="wrap">
-        {/* HEADER PERFIL + CARRITO */}
+        {/* HEADER PERFIL */}
         <section className="header">
           <div className="logo">
-            <div className="img">
-              <Image
-                src={brand?.logo_url || "/noimg.png"}
-                alt={brand?.name || "Marca"}
-                fill
-                sizes="120px"
-                style={{ objectFit: "contain" }}
-              />
-            </div>
+            <Image
+              src={brand?.logo_url || "/noimg.png"}
+              alt={brand?.name || "Marca"}
+              fill
+              style={{ objectFit: "cover", borderRadius: "12px" }}
+            />
           </div>
 
           <div className="meta">
@@ -251,28 +228,25 @@ export default function BrandPage() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ig"
-                style={{ borderColor: accent, color: accent }}
               >
-                <span style={{ fontSize: 18, marginRight: 6 }}>📷</span>
-                Instagram
+                📷 Instagram
               </a>
             )}
           </div>
 
           <div className="cart">
-            {/* carrito a la derecha del header */}
             <CartSidebar brandSlug={brand?.slug} compact />
           </div>
         </section>
 
-        {/* TOOLBAR arriba del catálogo */}
+        {/* FILTROS Y BUSCADOR */}
         <section className="toolbar">
           <div className="pills">
             <button
               className={`pill ${category === "all" ? "on" : ""}`}
               onClick={() => setCategory("all")}
             >
-              Todas
+              Todos
             </button>
             {categories.map((c) => (
               <button
@@ -284,7 +258,6 @@ export default function BrandPage() {
               </button>
             ))}
           </div>
-
           <input
             className="search"
             placeholder="Buscar producto…"
@@ -318,25 +291,22 @@ export default function BrandPage() {
           padding: 18px 16px 60px;
           margin: 0 auto;
         }
-        /* Header en 3 columnas: logo | info | carrito */
         .header {
           display: grid;
-          grid-template-columns: 120px 1fr 360px;
-          gap: 16px;
+          grid-template-columns: 200px 1fr 320px;
+          gap: 18px;
           background: #0b0d11;
           border: 1px solid #1f2430;
           border-radius: 16px;
           padding: 14px;
           margin-bottom: 18px;
         }
-        .logo .img {
+        .logo {
           position: relative;
           width: 100%;
-          height: 0;
-          padding-bottom: 100%;
-          background: #0f1115;
-          border: 1px solid #1f2430;
+          aspect-ratio: 1;
           border-radius: 12px;
+          overflow: hidden;
         }
         .meta h1 {
           margin: 2px 0 6px 0;
@@ -353,17 +323,11 @@ export default function BrandPage() {
         .ig {
           display: inline-flex;
           align-items: center;
-          gap: 4px;
-          border: 1px solid;
+          border: 1px solid #263046;
           padding: 6px 10px;
           border-radius: 999px;
           font-weight: 600;
         }
-        .cart {
-          min-width: 0;
-        }
-
-        /* Toolbar encima del grid */
         .toolbar {
           display: grid;
           grid-template-columns: 1fr 240px;
@@ -399,8 +363,6 @@ export default function BrandPage() {
           color: #e8ecf8;
           padding: 0 10px;
         }
-
-        /* Grid del catálogo ~4 por fila en desktop */
         .grid {
           display: grid;
           gap: 14px;
@@ -412,15 +374,6 @@ export default function BrandPage() {
           border-radius: 12px;
           padding: 18px;
           text-align: center;
-        }
-
-        @media (max-width: 1024px) {
-          .header {
-            grid-template-columns: 120px 1fr;
-          }
-          .cart {
-            grid-column: 1 / -1;
-          }
         }
       `}</style>
     </>
