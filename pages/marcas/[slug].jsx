@@ -17,8 +17,16 @@ export default function BrandCatalog() {
 
   const [brand, setBrand] = useState(null);
   const [products, setProducts] = useState(null);
+
+  // categoría activa (“Todas” por defecto) y búsqueda simple
   const [filter, setFilter] = useState("Todas");
   const [q, setQ] = useState("");
+
+  // índice de imagen visible por producto (para las flechas)
+  const [imgIdx, setImgIdx] = useState({}); // { [productId]: number }
+
+  // cartel de confirmación al agregar
+  const [addedId, setAddedId] = useState(null);
 
   useEffect(() => {
     if (!slug) return;
@@ -33,11 +41,11 @@ export default function BrandCatalog() {
         .maybeSingle();
       setBrand(br || null);
 
-      // cargar productos públicos (activos, no borrados, con stock > 0)
+      // cargar productos públicos (activos, stock > 0, no borrados)
       if (br?.id) {
         const { data: prods } = await supabase
           .from("products")
-          .select("id,name,price,image_url,image_urls,category,subcategory,active,deleted_at,stock")
+          .select("id,name,price,image_url,image_urls,category,subcategory,active,deleted_at,stock,brand_id,created_at")
           .eq("brand_id", br.id)
           .is("deleted_at", null)
           .eq("active", true)
@@ -50,10 +58,17 @@ export default function BrandCatalog() {
     })();
   }, [slug]);
 
+  // categorías dinámicas (solo las que realmente existen en los productos de la marca)
   const categories = useMemo(() => {
-    return ["Todas", "Remera", "Pantalon", "Buzo", "Campera", "Gorra", "Otros"];
-  }, []);
+    const set = new Set();
+    (products || []).forEach((p) => {
+      const c = (p.category || "").trim();
+      if (c) set.add(c);
+    });
+    return ["Todas", ...Array.from(set)];
+  }, [products]);
 
+  // listado visible según filtro/búsqueda
   const visible = useMemo(() => {
     let list = products || [];
     if (filter && filter !== "Todas") {
@@ -65,6 +80,62 @@ export default function BrandCatalog() {
     }
     return list;
   }, [products, filter, q]);
+
+  // helpers de galería
+  const getGallery = (p) => {
+    const arr = Array.isArray(p.image_urls) && p.image_urls.length ? p.image_urls : (p.image_url ? [p.image_url] : []);
+    return arr.slice(0, 5); // por si guardaste más, recortamos a 5
+  };
+  const currentImgFor = (p) => {
+    const gal = getGallery(p);
+    const idx = imgIdx[p.id] ?? 0;
+    return gal[gal.length ? (idx % gal.length + gal.length) % gal.length : 0] || null;
+  };
+  const goLeft = (p) => {
+    const gal = getGallery(p);
+    if (!gal.length) return;
+    setImgIdx((prev) => ({ ...prev, [p.id]: (prev[p.id] ?? 0) - 1 }));
+  };
+  const goRight = (p) => {
+    const gal = getGallery(p);
+    if (!gal.length) return;
+    setImgIdx((prev) => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
+  };
+
+  // carrito por marca en localStorage
+  const addToCart = (p) => {
+    if (!brand?.id) return;
+    const key = `cart:${brand.id}`;
+    const raw = (typeof window !== "undefined") ? window.localStorage.getItem(key) : null;
+    let cart = [];
+    try { cart = raw ? JSON.parse(raw) : []; } catch { cart = []; }
+
+    // si ya existe el ítem, sumamos qty (sin pasar stock)
+    const idx = cart.findIndex((it) => it.product_id === p.id);
+    if (idx >= 0) {
+      const max = Math.max(1, Number(p.stock || 1));
+      cart[idx].qty = Math.min(max, Number(cart[idx].qty || 0) + 1);
+    } else {
+      cart.push({
+        product_id: p.id,
+        name: p.name,
+        price: Number(p.price || 0),
+        image: currentImgFor(p),
+        qty: 1,
+        stock: Number(p.stock || 1),
+      });
+    }
+    window.localStorage.setItem(key, JSON.stringify(cart));
+
+    // disparar un evento por si tu header escucha “cart:updated”
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("cart:updated", { detail: { brandId: brand.id, count: cart.length } }));
+    }
+
+    // feedback visual
+    setAddedId(p.id);
+    setTimeout(() => setAddedId(null), 1200);
+  };
 
   return (
     <div className="container">
@@ -109,7 +180,7 @@ export default function BrandCatalog() {
               </div>
             </div>
 
-            {/* filtros y búsqueda */}
+            {/* filtros dinámicos y búsqueda */}
             <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
               <div className="chips" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {categories.map((c) => (
@@ -146,10 +217,41 @@ export default function BrandCatalog() {
             ) : (
               <div className="grid grid-4" style={{ gap: 12 }}>
                 {visible.map((p) => {
-                  const first = Array.isArray(p.image_urls) && p.image_urls.length ? p.image_urls[0] : (p.image_url || null);
+                  const gal = getGallery(p);
+                  const current = currentImgFor(p);
+                  const showArrows = gal.length > 1;
                   return (
                     <article key={p.id} className="card" style={{ padding: 12 }}>
-                      <ImageBox src={first} alt={p.name} ratio="4:3" />
+                      <div style={{ position: "relative" }}>
+                        <ImageBox src={current} alt={p.name} ratio="4:3" />
+                        {showArrows && (
+                          <>
+                            <button
+                              className="nav-btn left"
+                              aria-label="Imagen anterior"
+                              onClick={() => goLeft(p)}
+                              title="Anterior"
+                            >
+                              ◀
+                            </button>
+                            <button
+                              className="nav-btn right"
+                              aria-label="Siguiente imagen"
+                              onClick={() => goRight(p)}
+                              title="Siguiente"
+                            >
+                              ▶
+                            </button>
+                            <div className="dots">
+                              {gal.map((_, i) => {
+                                const at = ((imgIdx[p.id] ?? 0) % gal.length + gal.length) % gal.length;
+                                return <span key={i} className={`dot ${i === at ? "on" : ""}`} />;
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+
                       <div style={{ marginTop: 8 }}>
                         <div style={{ fontWeight: 600 }}>{p.name}</div>
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
@@ -157,12 +259,51 @@ export default function BrandCatalog() {
                         </div>
                         <div className="badge" style={{ marginTop: 6 }}>{money(p.price)}</div>
                       </div>
-                      <div className="row" style={{ marginTop: 10 }}>
+
+                      <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>Stock: {p.stock ?? 0}</div>
                         <div style={{ flex: 1 }} />
-                        <Link className="btn" href={`/checkout/${brand.slug}?pid=${p.id}`}>
-                          Agregar
-                        </Link>
+                        <button className="btn" onClick={() => addToCart(p)}>
+                          {addedId === p.id ? "Agregado ✓" : "Agregar"}
+                        </button>
                       </div>
+
+                      <style jsx>{`
+                        .nav-btn {
+                          position: absolute;
+                          top: 50%;
+                          transform: translateY(-50%);
+                          background: rgba(0,0,0,0.55);
+                          color: #fff;
+                          border: 1px solid rgba(255,255,255,0.25);
+                          border-radius: 999px;
+                          width: 32px;
+                          height: 32px;
+                          display: grid;
+                          place-items: center;
+                          cursor: pointer;
+                          opacity: 0.9;
+                        }
+                        .nav-btn:hover { opacity: 1; }
+                        .nav-btn.left { left: 8px; }
+                        .nav-btn.right { right: 8px; }
+                        .dots {
+                          position: absolute;
+                          bottom: 6px;
+                          left: 0;
+                          right: 0;
+                          display: flex;
+                          justify-content: center;
+                          gap: 6px;
+                        }
+                        .dot {
+                          width: 6px;
+                          height: 6px;
+                          border-radius: 999px;
+                          background: rgba(255,255,255,0.35);
+                        }
+                        .dot.on { background: rgba(255,255,255,0.9); }
+                      `}</style>
                     </article>
                   );
                 })}
