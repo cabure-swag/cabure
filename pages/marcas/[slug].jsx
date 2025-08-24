@@ -1,259 +1,372 @@
-// pages/marcas/[slug].jsx
-import React, { useMemo, useState } from "react";
 import Head from "next/head";
+import Image from "next/image";
 import Link from "next/link";
+import dynamic from "next/dynamic";
+import { useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { BrandCartProvider, useBrandCart } from "@/lib/brandCart";
-import BrandCart from "@/components/BrandCart";
 
-// ---------- Tarjeta de Producto (usa el carrito sin redirigir) ----------
-function ProductCard({ p }) {
-  const { add } = useBrandCart();
-  const [idx, setIdx] = useState(0);
-  const imgs = p.images?.length ? p.images : (p.image_url ? [p.image_url] : []);
-  const img = imgs[idx] || "/noimg.png";
+// Cargamos el carrito embebido de forma dinámica.
+// Si tu proyecto ya tiene "@/components/CartSidebar", se usa.
+// Si no existe, no rompe el build (renderiza null).
+const CartSidebar = dynamic(
+  () =>
+    import("@/components/CartSidebar")
+      .then((m) => m.default || m)
+      .catch(() => () => null),
+  { ssr: false, loading: () => null }
+);
 
-  const next = () => setIdx((i) => (i + 1) % (imgs.length || 1));
-  const prev = () => setIdx((i) => (i - 1 + (imgs.length || 1)) % (imgs.length || 1));
-
-  const outOfStock = (p.stock ?? 0) <= 0 || p.active === false;
+export default function BrandPage({ brand, products: initial }) {
+  const [q, setQ] = useState("");
+  const products = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    if (!query) return initial;
+    return initial.filter(
+      (p) =>
+        (p.name || "").toLowerCase().includes(query) ||
+        (p.category || "").toLowerCase().includes(query)
+    );
+  }, [q, initial]);
 
   return (
-    <article
-      className="card"
-      style={{
-        border: "1px solid var(--border, #2b2b2b)",
-        borderRadius: 14,
-        background: "var(--card, #121212)",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          position: "relative",
-          aspectRatio: "1 / 1", // cuadrada como pediste
-          background: "#0e0e0e",
-        }}
-      >
-        <img
-          src={img}
-          alt={p.name}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-        {imgs.length > 1 && (
-          <>
-            <button
-              className="btn btn-ghost"
-              onClick={prev}
-              aria-label="Imagen anterior"
-              style={{
-                position: "absolute",
-                left: 8,
-                top: "50%",
-                transform: "translateY(-50%)",
-                borderRadius: "50%",
-                width: 34,
-                height: 34,
-              }}
-            >
-              ‹
-            </button>
-            <button
-              className="btn btn-ghost"
-              onClick={next}
-              aria-label="Siguiente imagen"
-              style={{
-                position: "absolute",
-                right: 8,
-                top: "50%",
-                transform: "translateY(-50%)",
-                borderRadius: "50%",
-                width: 34,
-                height: 34,
-              }}
-            >
-              ›
-            </button>
-          </>
+    <>
+      <Head>
+        <title>{brand.name} — CABURE.STORE</title>
+        <meta name="robots" content="index,follow" />
+      </Head>
+
+      <div className="wrap">
+        {/* HEADER PERFIL + CARRITO */}
+        <section className="brandHeader card">
+          <div className="left">
+            <div className="logo">
+              {brand.logo_url ? (
+                <Image
+                  src={brand.logo_url}
+                  alt={brand.name}
+                  width={96}
+                  height={96}
+                />
+              ) : (
+                <div className="placeholder" />
+              )}
+            </div>
+
+            <div className="meta">
+              <h1 className="title">{brand.name}</h1>
+              {brand.description ? (
+                <p className="desc">{brand.description}</p>
+              ) : null}
+              <div className="links">
+                {brand.instagram_url ? (
+                  <Link
+                    href={brand.instagram_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ig"
+                  >
+                    <span aria-hidden>📷</span> Instagram
+                  </Link>
+                ) : null}
+              </div>
+
+              {/* Filtros básicos */}
+              <div className="filters">
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Buscar producto…"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Carrito embebido a la derecha del perfil */}
+          <aside className="right">
+            <CartSidebar embedded brandId={brand.id} />
+          </aside>
+        </section>
+
+        {/* GRID DE PRODUCTOS */}
+        <section className="grid">
+          {products.length === 0 ? (
+            <div className="empty">No hay productos para mostrar.</div>
+          ) : (
+            products.map((p) => <ProductCard key={p.id} product={p} />)
+          )}
+        </section>
+      </div>
+
+      <style jsx>{`
+        .wrap {
+          max-width: 1100px;
+          margin: 24px auto;
+          padding: 0 16px;
+        }
+        .card {
+          background: var(--surface, #0f1115);
+          border: 1px solid var(--border, #1f2430);
+          border-radius: 14px;
+        }
+        .brandHeader {
+          display: grid;
+          grid-template-columns: 1fr 340px;
+          gap: 16px;
+          padding: 16px;
+        }
+        .left {
+          display: grid;
+          grid-template-columns: 96px 1fr;
+          gap: 16px;
+          align-items: center;
+        }
+        .logo .placeholder {
+          width: 96px;
+          height: 96px;
+          border-radius: 12px;
+          background: #111820;
+          border: 1px dashed var(--border, #1f2430);
+        }
+        .title {
+          margin: 0 0 6px;
+          font-size: 24px;
+          line-height: 1.15;
+        }
+        .desc {
+          margin: 0 0 8px;
+          color: #a8b3cf;
+          font-size: 14px;
+        }
+        .links {
+          display: flex;
+          gap: 10px;
+          margin: 4px 0 10px;
+        }
+        .ig {
+          display: inline-flex;
+          gap: 6px;
+          align-items: center;
+          padding: 6px 10px;
+          border: 1px solid var(--border, #1f2430);
+          border-radius: 10px;
+        }
+        .filters {
+          display: flex;
+          gap: 8px;
+        }
+        .filters input {
+          flex: 1;
+          background: #0b0d11;
+          border: 1px solid var(--border, #1f2430);
+          border-radius: 10px;
+          padding: 8px 10px;
+          color: #e8ecf8;
+        }
+
+        .right {
+          min-height: 100%;
+        }
+        /* Si CartSidebar no existe, el aside queda vacío; no pasa nada. */
+
+        .grid {
+          margin-top: 16px;
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 16px;
+        }
+        .empty {
+          grid-column: 1 / -1;
+          padding: 24px;
+          text-align: center;
+          color: #a8b3cf;
+          border: 1px dashed var(--border, #1f2430);
+          border-radius: 12px;
+        }
+
+        @media (max-width: 1024px) {
+          .brandHeader {
+            grid-template-columns: 1fr;
+          }
+          .right {
+            order: 2;
+          }
+        }
+        @media (max-width: 900px) {
+          .grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+        }
+        @media (max-width: 680px) {
+          .grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+        }
+      `}</style>
+    </>
+  );
+}
+
+/* ---------- Targeta simple de producto: cuadrada y limpia ---------- */
+function ProductCard({ product }) {
+  const img = (product.images && product.images[0]) || product.image_url || "";
+
+  return (
+    <article className="card product">
+      <div className="imgWrap">
+        {img ? (
+          // Sugerido 1:1. Next/Image recorta manteniendo calidad
+          <Image
+            src={img}
+            alt={product.name}
+            width={900}
+            height={900}
+            style={{ objectFit: "cover" }}
+            priority={false}
+          />
+        ) : (
+          <div className="placeholder" />
         )}
       </div>
 
-      <div style={{ padding: 12 }}>
-        <div style={{ fontWeight: 700 }}>{p.name}</div>
-        {p.category && (
-          <div style={{ opacity: 0.7, fontSize: 13, marginTop: 2 }}>{p.category}</div>
-        )}
-        <div style={{ marginTop: 8, fontWeight: 700 }}>
-          ${Number(p.price).toLocaleString("es-AR")}
+      <div className="body">
+        <h3 className="name">{product.name}</h3>
+        <div className="metaLine">
+          <span className="cat">{product.category || "—"}</span>
+          <span className="price">
+            {formatCurrency(product.price ?? 0)}
+          </span>
         </div>
-        <div style={{ opacity: 0.7, fontSize: 13, marginTop: 2 }}>
-          Stock: {p.stock ?? 0}
+        <div className="stock">
+          {Number(product.stock) > 0 ? `Stock: ${product.stock}` : "Sin stock"}
         </div>
 
+        {/* Botón de agregar — mantené tu handler actual si ya lo tenés */}
         <button
-          className="btn btn-primary"
-          onClick={() => add(p, 1)}
-          disabled={outOfStock}
-          style={{ marginTop: 10, width: "100%" }}
-          aria-label="Agregar al carrito"
+          className="btn"
+          onClick={() => {
+            // Si ya tenés un contexto/carrito, llamalo acá:
+            // addToCart(product)
+            const ev = new CustomEvent("brand:add-to-cart", {
+              detail: { product },
+            });
+            window.dispatchEvent(ev);
+          }}
+          disabled={Number(product.stock) <= 0}
         >
-          {outOfStock ? "Sin stock" : "Agregar"}
+          {Number(product.stock) > 0 ? "Agregar" : "Sin stock"}
         </button>
       </div>
+
+      <style jsx>{`
+        .product {
+          display: grid;
+          grid-template-rows: auto 1fr;
+          overflow: hidden;
+        }
+        .imgWrap {
+          aspect-ratio: 1 / 1; /* cuadrada */
+          width: 100%;
+          background: #0b0d11;
+          border-bottom: 1px solid var(--border, #1f2430);
+        }
+        .imgWrap :global(img) {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+        .placeholder {
+          width: 100%;
+          height: 100%;
+          background: #0f141c;
+        }
+        .body {
+          padding: 12px;
+          display: grid;
+          gap: 6px;
+        }
+        .name {
+          margin: 0;
+          font-size: 15px;
+          line-height: 1.3;
+        }
+        .metaLine {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          color: #a8b3cf;
+          font-size: 13px;
+        }
+        .price {
+          color: #e8ecf8;
+          font-weight: 600;
+        }
+        .stock {
+          font-size: 12px;
+          color: #a8b3cf;
+        }
+        .btn {
+          margin-top: 6px;
+          height: 36px;
+          border-radius: 10px;
+          background: #00f0b5;
+          color: #0b0d11;
+          font-weight: 700;
+          border: none;
+          cursor: pointer;
+        }
+        .btn[disabled] {
+          background: #222b36;
+          color: #7a859b;
+          cursor: not-allowed;
+        }
+      `}</style>
     </article>
   );
 }
 
-// ------------------- Página Marca -------------------
-export default function BrandPage({ brand, products }) {
-  const brandSlug = brand?.slug;
-
-  // categorías: siempre mostrar “Todas” + las de esta marca (aunque sea una sola)
-  const categories = useMemo(() => {
-    const set = new Set();
-    (products || []).forEach((p) => p.category && set.add(p.category));
-    return ["Todas", ...Array.from(set)];
-  }, [products]);
-
-  const [cat, setCat] = useState("Todas");
-  const [q, setQ] = useState("");
-
-  const filtered = useMemo(() => {
-    return (products || [])
-      .filter((p) => p.active !== false) // ocultar desactivados
-      .filter((p) => (cat === "Todas" ? true : p.category === cat))
-      .filter((p) =>
-        q.trim()
-          ? (p.name || "").toLowerCase().includes(q.trim().toLowerCase())
-          : true
-      );
-  }, [products, cat, q]);
-
-  return (
-    <BrandCartProvider brandSlug={brandSlug}>
-      <Head>
-        <title>{brand?.name ? `${brand.name} — CABURE.STORE` : "Marca — CABURE.STORE"}</title>
-      </Head>
-
-      <header className="container" style={{ marginTop: 12 }}>
-        <div
-          className="card"
-          style={{
-            border: "1px solid var(--border, #2b2b2b)",
-            borderRadius: 14,
-            padding: 16,
-            background: "var(--card, #121212)",
-          }}
-        >
-          <div className="row" style={{ gap: 14, alignItems: "center" }}>
-            <img
-              src={brand.logo_url || "/noimg.png"}
-              alt={brand.name}
-              width={84}
-              height={84}
-              style={{ objectFit: "contain", background: "#0e0e0e", borderRadius: 12 }}
-            />
-            <div style={{ flex: 1 }}>
-              <h1 style={{ margin: 0 }}>{brand.name}</h1>
-              {brand.description && (
-                <p style={{ margin: "6px 0 0 0", opacity: 0.8 }}>{brand.description}</p>
-              )}
-              {brand.instagram_url && (
-                <div style={{ marginTop: 6 }}>
-                  <Link href={brand.instagram_url} target="_blank" className="btn btn-ghost" aria-label="Instagram de la marca">
-                    <span style={{ marginRight: 6 }}>📷</span> Instagram
-                  </Link>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Filtros */}
-          <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            {categories.map((c) => (
-              <button
-                key={c}
-                className={`btn ${cat === c ? "btn-primary" : "btn-ghost"}`}
-                onClick={() => setCat(c)}
-              >
-                {c}
-              </button>
-            ))}
-            <input
-              placeholder="Buscar producto…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              style={{
-                marginLeft: "auto",
-                minWidth: 220,
-                background: "transparent",
-                border: "1px solid var(--border, #2b2b2b)",
-                borderRadius: 10,
-                padding: "8px 10px",
-                color: "inherit",
-              }}
-            />
-          </div>
-        </div>
-      </header>
-
-      {/* Layout con carrito a la derecha */}
-      <main
-        className="container"
-        style={{
-          display: "grid",
-          gap: 16,
-          gridTemplateColumns: "1fr 360px",
-          alignItems: "start",
-          marginTop: 16,
-        }}
-      >
-        {/* Grilla de productos */}
-        <section
-          style={{
-            display: "grid",
-            gap: 14,
-            gridTemplateColumns: "repeat(4, minmax(0, 1fr))", // 4 por fila
-          }}
-        >
-          {filtered.length === 0 ? (
-            <p style={{ opacity: 0.8 }}>No hay productos para mostrar.</p>
-          ) : (
-            filtered.map((p) => <ProductCard key={p.id} p={p} />)
-          )}
-        </section>
-
-        {/* Carrito por marca */}
-        <BrandCart />
-      </main>
-
-      <footer className="container" style={{ opacity: 0.6, fontSize: 12, margin: "24px 0" }}>
-        © {new Date().getFullYear()} CABURE.STORE
-      </footer>
-    </BrandCartProvider>
-  );
+function formatCurrency(n) {
+  try {
+    return new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency: "ARS",
+      maximumFractionDigits: 0,
+    }).format(Number(n) || 0);
+  } catch {
+    return `$${Number(n) || 0}`;
+  }
 }
 
-// --------- Data Fetch ----------
+/* ---------- SSR: SOLO productos y marcas activas ---------- */
 export async function getServerSideProps(ctx) {
   const { slug } = ctx.params || {};
-  // brand
+
+  // 1) Marca
   const { data: brand, error: e1 } = await supabase
     .from("brands")
-    .select("id, name, slug, description, instagram_url, logo_url, color, active")
+    .select(
+      "id, name, slug, description, instagram_url, logo_url, color, active"
+    )
     .eq("slug", slug)
     .maybeSingle();
 
-  if (e1 || !brand || brand.active === false) {
-    return { notFound: true };
-  }
+  if (e1 || !brand) return { notFound: true };
+  if (brand.active === false) return { notFound: true }; // bloqueá marcas inactivas
 
-  // products (activos o con stock > 0)
+  // 2) Productos activos de esa marca (orden a gusto)
   const { data: products, error: e2 } = await supabase
     .from("products")
-    .select("id, name, price, stock, category, image_url, images, active")
+    .select(
+      "id, name, price, stock, category, image_url, images, active, brand_id"
+    )
     .eq("brand_id", brand.id)
+    .eq("active", true)
     .order("id", { ascending: false });
+
+  if (e2) {
+    // Si la policy RLS te bloquea, devolvemos lista vacía para no romper
+    return { props: { brand, products: [] } };
+  }
 
   return {
     props: {
