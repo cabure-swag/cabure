@@ -47,57 +47,78 @@ export default function BrandPage({ brand, products: initial }) {
       </Head>
 
       <div className="wrap">
-        {/* ENCABEZADO: PERFIL IZQUIERDA + CARRITO DERECHA */}
-        <section className="card headerGrid">
-          <div className="colLeft">
-            <div className="brandRow">
-              <div className="logo">
-                {brand.logo_url ? (
-                  <Image
-                    src={brand.logo_url}
-                    alt={brand.name}
-                    width={96}
-                    height={96}
-                    style={{ objectFit: "contain" }}
-                  />
-                ) : (
-                  <div className="logoPh" />
-                )}
+        {/* HERO: foto izq + texto medio + carrito der (todo en una sola tarjeta) */}
+        <section className="hero">
+          {/* Carrito arriba a la derecha, “flotando” dentro del hero */}
+          <div className="cartDock">
+            <CartSidebar brandSlug={brand.slug} compact />
+          </div>
+
+          <div className="heroGrid">
+            {/* Foto de perfil grande */}
+            <div className="photoBox">
+              {brand.logo_url ? (
+                <Image
+                  src={brand.logo_url}
+                  alt={brand.name}
+                  width={220}
+                  height={220}
+                  className="photo"
+                  priority
+                />
+              ) : (
+                <div className="photo ph" />
+              )}
+            </div>
+
+            {/* Título + descripción + buscador */}
+            <div className="textBox">
+              <h1 className="title">{brand.name}</h1>
+              {brand.description ? (
+                <p className="desc">{brand.description}</p>
+              ) : null}
+
+              <div className="searchRow">
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Buscar producto…"
+                  aria-label="Buscar producto"
+                />
               </div>
-              <div className="meta">
-                <h1 className="title">{brand.name}</h1>
-                {brand.description ? (
-                  <p className="desc">{brand.description}</p>
+            </div>
+
+            {/* Fila de iconos abajo a la derecha */}
+            <div className="socialBox">
+              <div className="socialRow">
+                {brand.instagram_url ? (
+                  <Link
+                    href={brand.instagram_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="iconBtn"
+                    aria-label="Instagram de la marca"
+                    title="Instagram"
+                  >
+                    <span>📷</span>
+                  </Link>
                 ) : null}
-                <div className="links">
-                  {brand.instagram_url ? (
-                    <Link
-                      href={brand.instagram_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btnGhost"
-                      aria-label="Instagram de la marca"
-                    >
-                      <span style={{ marginRight: 6 }}>📷</span> Instagram
-                    </Link>
-                  ) : null}
-                </div>
-                <div className="filters">
-                  <input
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                    placeholder="Buscar producto…"
-                    aria-label="Buscar producto"
-                  />
-                </div>
+
+                {brand.website_url ? (
+                  <Link
+                    href={brand.website_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="iconBtn"
+                    aria-label="Sitio web"
+                    title="Sitio web"
+                  >
+                    <span>🌐</span>
+                  </Link>
+                ) : null}
               </div>
             </div>
           </div>
-
-          <aside className="colRight">
-            {/* Carrito por marca, fijo a la derecha */}
-            <CartSidebar brandSlug={brand.slug} />
-          </aside>
         </section>
 
         {/* GRID DE PRODUCTOS (4 por fila en desktop) */}
@@ -112,84 +133,136 @@ export default function BrandPage({ brand, products: initial }) {
 
       <style jsx>{`
         .wrap {
-          max-width: 1100px;
+          max-width: 1200px;
           margin: 24px auto;
           padding: 0 16px;
         }
-        .card {
+        .hero {
+          position: relative;
           background: var(--surface, #0f1115);
           border: 1px solid var(--border, #1f2430);
-          border-radius: 14px;
+          border-radius: 16px;
+          padding: 22px;
+          margin-bottom: 18px;
+          overflow: hidden;
         }
-        .headerGrid {
+        /* Dock del carrito dentro del hero */
+        .cartDock {
+          position: absolute;
+          top: 16px;
+          right: 16px;
+          width: 330px;
+          max-width: 38vw;
+        }
+        /* Grid principal del hero:
+           [foto] [texto] [columna vacía para alinear sociales con carrito] */
+        .heroGrid {
           display: grid;
-          grid-template-columns: 1fr 360px;
-          gap: 16px;
-          padding: 16px;
+          grid-template-columns: 240px 1fr 330px;
+          grid-template-rows: auto 1fr auto;
+          gap: 18px 20px;
           align-items: start;
+          min-height: 220px;
         }
-        .brandRow {
-          display: grid;
-          grid-template-columns: 96px 1fr;
-          gap: 16px;
+        .photoBox {
+          grid-column: 1 / 2;
+          grid-row: 1 / 4;
+          display: flex;
           align-items: center;
+          justify-content: center;
         }
-        .logoPh {
-          width: 96px;
-          height: 96px;
-          border-radius: 12px;
-          background: #111820;
+        .photo {
+          width: 220px;
+          height: 220px;
+          object-fit: contain;
+          border-radius: 14px;
+          background: #0b0d11;
+          border: 1px solid var(--border, #1f2430);
+        }
+        .photo.ph {
+          width: 220px;
+          height: 220px;
+          border-radius: 14px;
+          background: #0b0d11;
           border: 1px dashed var(--border, #1f2430);
         }
+        .textBox {
+          grid-column: 2 / 3;
+          grid-row: 1 / 3;
+          display: grid;
+          gap: 8px;
+        }
         .title {
-          margin: 0 0 6px;
-          font-size: 24px;
-          line-height: 1.15;
+          margin: 0;
+          font-size: 34px;
+          line-height: 1.1;
         }
         .desc {
-          margin: 0 0 8px;
+          margin: 0 0 4px;
           color: #a8b3cf;
-          font-size: 14px;
+          font-size: 15px;
+          max-width: 68ch;
         }
-        .links {
-          display: flex;
-          gap: 10px;
-          margin: 4px 0 10px;
-        }
-        .btnGhost {
-          display: inline-flex;
-          gap: 6px;
-          align-items: center;
-          padding: 6px 10px;
-          border: 1px solid var(--border, #1f2430);
-          border-radius: 10px;
-          color: inherit;
-        }
-        .filters input {
+        .searchRow input {
           width: 100%;
           background: #0b0d11;
           border: 1px solid var(--border, #1f2430);
           border-radius: 10px;
-          padding: 8px 10px;
+          padding: 10px 12px;
           color: #e8ecf8;
         }
+        .socialBox {
+          grid-column: 3 / 4;
+          grid-row: 3 / 4;
+          display: flex;
+          justify-content: flex-end;
+          align-items: flex-end;
+        }
+        .socialRow {
+          display: inline-flex;
+          gap: 10px;
+        }
+        .iconBtn {
+          width: 40px;
+          height: 40px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 10px;
+          border: 1px solid var(--border, #1f2430);
+          background: #0b0d11;
+          color: inherit;
+          font-size: 18px;
+        }
+
+        /* GRID de productos */
         .grid {
-          margin-top: 16px;
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
           gap: 16px;
         }
         .empty {
           grid-column: 1 / -1;
-          padding: 24px;
+          padding: 26px;
           text-align: center;
           color: #a8b3cf;
           border: 1px dashed var(--border, #1f2430);
           border-radius: 12px;
         }
-        @media (max-width: 1024px) {
-          .headerGrid {
-            grid-template-columns: 1fr;
+
+        /* Responsivo */
+        @media (max-width: 1100px) {
+          .heroGrid {
+            grid-template-columns: 240px 1fr;
+          }
+          .cartDock {
+            position: static;
+            width: 100%;
+            max-width: 100%;
+            margin-bottom: 12px;
+          }
+          .socialBox {
+            grid-column: 2 / 3;
           }
         }
         @media (max-width: 900px) {
@@ -198,8 +271,30 @@ export default function BrandPage({ brand, products: initial }) {
           }
         }
         @media (max-width: 680px) {
+          .heroGrid {
+            grid-template-columns: 1fr;
+            grid-template-rows: auto auto auto;
+          }
+          .photoBox {
+            grid-column: 1 / 2;
+            grid-row: 2 / 3;
+          }
+          .textBox {
+            grid-column: 1 / 2;
+            grid-row: 1 / 2;
+          }
+          .socialBox {
+            grid-column: 1 / 2;
+            grid-row: 3 / 4;
+            justify-content: flex-start;
+          }
           .grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+          .photo,
+          .photo.ph {
+            width: 180px;
+            height: 180px;
           }
         }
       `}</style>
@@ -249,6 +344,9 @@ function ProductCard({ product, brandSlug }) {
 
       <style jsx>{`
         .product {
+          background: var(--surface, #0f1115);
+          border: 1px solid var(--border, #1f2430);
+          border-radius: 14px;
           display: grid;
           grid-template-rows: auto 1fr;
           overflow: hidden;
@@ -304,15 +402,15 @@ function ProductCard({ product, brandSlug }) {
   );
 }
 
-/* ---------- SSR: SOLO productos y marcas activas ---------- */
+/* ---------- SSR: SOLO marcas activas + productos activos ---------- */
 export async function getServerSideProps(ctx) {
   const { slug } = ctx.params || {};
 
-  // 1) Marca (solo si está activa)
+  // 1) Marca (activa)
   const { data: brand, error: e1 } = await supabase
     .from("brands")
     .select(
-      "id, name, slug, description, instagram_url, logo_url, color, active"
+      "id, name, slug, description, instagram_url, website_url, logo_url, color, active"
     )
     .eq("slug", slug)
     .maybeSingle();
@@ -328,15 +426,10 @@ export async function getServerSideProps(ctx) {
     .eq("active", true)
     .order("id", { ascending: false });
 
-  if (e2) {
-    // Si una policy bloquea, devolvemos lista vacía sin romper
-    return { props: { brand, products: [] } };
-  }
-
   return {
     props: {
       brand,
-      products: products || [],
+      products: e2 ? [] : products || [],
     },
   };
 }
