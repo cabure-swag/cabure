@@ -1,49 +1,66 @@
 // utils/brandCart.js
-export function getBrandCart(brandSlug) {
+// Carrito por marca – seguro para SSR
+
+const isBrowser = () => typeof window !== "undefined";
+
+const key = (brandSlug) => `cabure:cart:${brandSlug || "unknown"}`;
+
+export function readBrandCart(brandSlug) {
   try {
-    const raw = localStorage.getItem(`cart:${brandSlug}`);
+    if (!isBrowser()) return [];
+    const raw = window.localStorage.getItem(key(brandSlug));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 }
 
-export function setBrandCart(brandSlug, items) {
+export function writeBrandCart(brandSlug, items) {
   try {
-    localStorage.setItem(`cart:${brandSlug}`, JSON.stringify(items || []));
-    // Para que el Sidebar se auto-actualice si está en otra pestaña
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key: `cart:${brandSlug}`,
-        newValue: JSON.stringify(items || []),
-      })
-    );
-  } catch {
-    // no-op
-  }
+    if (!isBrowser()) return;
+    window.localStorage.setItem(key(brandSlug), JSON.stringify(items || []));
+  } catch {}
 }
 
+export function clearBrandCart(brandSlug) {
+  try {
+    if (!isBrowser()) return;
+    window.localStorage.removeItem(key(brandSlug));
+  } catch {}
+}
+
+// Agrega o incrementa qty; respeta stock si viene en el producto
 export function addToBrandCart(brandSlug, product, qty = 1) {
-  const items = getBrandCart(brandSlug);
-  const idx = items.findIndex((x) => x.product_id === product.id);
-  const max = Number(product.stock ?? Infinity);
-  if (idx >= 0) {
-    const cur = Number(items[idx].qty || 0);
-    items[idx].qty = Math.min(cur + Number(qty || 1), max);
-  } else {
+  if (!brandSlug || !product?.id) return;
+  const items = readBrandCart(brandSlug);
+  const idx = items.findIndex((it) => it.id === product.id);
+  const inc = Math.max(1, Number(qty || 1));
+
+  if (idx === -1) {
+    const max = product.stock != null ? Number(product.stock) : Infinity;
     items.push({
-      product_id: product.id,
-      name: product.name,
+      id: product.id,
+      name: product.name || "",
       price: Number(product.price || 0),
-      qty: Math.max(1, Math.min(Number(qty || 1), max)),
-      image:
-        (Array.isArray(product.images) && product.images[0]) ||
-        product.image_url ||
-        product.image ||
-        null,
-      stock: max,
+      qty: Math.min(inc, isFinite(max) ? max : inc),
     });
+  } else {
+    const max = product.stock != null ? Number(product.stock) : Infinity;
+    const nextQty = items[idx].qty + inc;
+    items[idx].qty = isFinite(max) ? Math.min(nextQty, max) : nextQty;
   }
-  setBrandCart(brandSlug, items);
-  return items;
+
+  writeBrandCart(brandSlug, items);
+
+  // dispara un storage event a mano para que otros tabs/comp reactualicen
+  try {
+    if (isBrowser()) {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: key(brandSlug),
+          newValue: JSON.stringify(items),
+        })
+      );
+    }
+  } catch {}
 }
