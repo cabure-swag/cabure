@@ -33,11 +33,11 @@ export default function BrandCatalog() {
         .maybeSingle();
       setBrand(br || null);
 
-      // cargar productos públicos (activos, no borrados)
+      // cargar productos públicos (activos, no borrados, con stock > 0)
       if (br?.id) {
         const { data: prods } = await supabase
           .from("products")
-          .select("id,name,price,image_url,category,subcategory,active,deleted_at,stock")
+          .select("id,name,price,image_url,image_urls,category,subcategory,active,deleted_at,stock")
           .eq("brand_id", br.id)
           .is("deleted_at", null)
           .eq("active", true)
@@ -51,8 +51,7 @@ export default function BrandCatalog() {
   }, [slug]);
 
   const categories = useMemo(() => {
-    const base = ["Todas", "Remera", "Pantalon", "Buzo", "Campera", "Gorra", "Otros"];
-    return base;
+    return ["Todas", "Remera", "Pantalon", "Buzo", "Campera", "Gorra", "Otros"];
   }, []);
 
   const visible = useMemo(() => {
@@ -136,7 +135,7 @@ export default function BrandCatalog() {
             </div>
           </section>
 
-          {/* grilla de productos */}
+          {/* grilla 4 por fila */}
           <section style={{ marginTop: 12 }}>
             {!products ? (
               <div className="skel" style={{ height: 200 }} />
@@ -145,28 +144,48 @@ export default function BrandCatalog() {
                 <p>No hay productos para mostrar.</p>
               </div>
             ) : (
-              <div className="grid grid-3" style={{ gap: 12 }}>
-                {visible.map((p) => (
-                  <article key={p.id} className="card" style={{ padding: 12 }}>
-                    <ImageBox src={p.image_url || null} alt={p.name} ratio="4:3" />
-                    <div style={{ marginTop: 8 }}>
-                      <div style={{ fontWeight: 600 }}>{p.name}</div>
-                      <div style={{ fontSize: 12, opacity: 0.8 }}>
-                        {p.subcategory || p.category || "—"}
+              <div className="grid grid-4" style={{ gap: 12 }}>
+                {visible.map((p) => {
+                  const first = Array.isArray(p.image_urls) && p.image_urls.length ? p.image_urls[0] : (p.image_url || null);
+                  return (
+                    <article key={p.id} className="card" style={{ padding: 12 }}>
+                      <ImageBox src={first} alt={p.name} ratio="4:3" />
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>
+                          {p.subcategory || p.category || "—"}
+                        </div>
+                        <div className="badge" style={{ marginTop: 6 }}>{money(p.price)}</div>
                       </div>
-                      <div className="badge" style={{ marginTop: 6 }}>{money(p.price)}</div>
-                    </div>
-                    <div className="row" style={{ marginTop: 10 }}>
-                      <div style={{ flex: 1 }} />
-                      <Link className="btn" href={`/checkout/${brand.slug}?pid=${p.id}`}>
-                        Agregar
-                      </Link>
-                    </div>
-                  </article>
-                ))}
+                      <div className="row" style={{ marginTop: 10 }}>
+                        <div style={{ flex: 1 }} />
+                        <Link className="btn" href={`/checkout/${brand.slug}?pid=${p.id}`}>
+                          Agregar
+                        </Link>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
+
+          {/* estilos responsivos para 4-col */}
+          <style jsx>{`
+            .grid.grid-4 {
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+            }
+            @media (max-width: 1100px) {
+              .grid.grid-4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            }
+            @media (max-width: 800px) {
+              .grid.grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            }
+            @media (max-width: 520px) {
+              .grid.grid-4 { grid-template-columns: 1fr; }
+            }
+          `}</style>
         </>
       )}
     </div>
