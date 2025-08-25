@@ -1,133 +1,149 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-export default function VendorChatBox({ threadId, senderRole = "vendor" }) {
+/**
+ * VendorChatBox
+ * Props:
+ *  - threadId (uuid)  // requerido
+ *  - senderRole: "user" | "vendor" | "admin"  // etiqueta en los mensajes
+ */
+export default function VendorChatBox({ threadId, senderRole = "user" }) {
+  const [session, setSession] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [closing, setClosing] = useState(false);
-  const scrollRef = useRef(null);
+  const [text, setText] = useState("");
+  const viewportRef = useRef(null);
+  const chanRef = useRef(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
+    return () => sub?.subscription?.unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (!threadId) return;
-    let mounted = true;
 
-    async function load() {
-      const { data, error } = await supabase
+    let mounted = true;
+    (async () => {
+      const { data } = await supabase
         .from("vendor_messages")
         .select("id,thread_id,sender_role,message,created_at")
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true });
-      if (!error && mounted) setMessages(data || []);
-    }
-    load();
 
-    const channel = supabase
-      .channel(`vm:${threadId}`)
+      if (mounted) setMessages(data || []);
+    })();
+
+    // Realtime
+    const chan = supabase
+      .channel(`vm_${threadId}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "vendor_messages", filter: `thread_id=eq.${threadId}` },
-        (payload) => setMessages((prev) => [...prev, payload.new])
+        (payload) => {
+          setMessages((m) => [...m, payload.new]);
+          scrollDown();
+        }
       )
       .subscribe();
 
+    chanRef.current = chan;
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      if (chanRef.current) supabase.removeChannel(chanRef.current);
     };
   }, [threadId]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
+    scrollDown();
   }, [messages.length]);
 
-  async function send() {
-    const text = input.trim();
-    if (!text || !threadId) return;
-    setInput("");
-    // Optimistic UI
-    const temp = { id: `temp-${Date.now()}`, thread_id: threadId, sender_role: senderRole, message: text, created_at: new Date().toISOString() };
-    setMessages((prev) => [...prev, temp]);
+  function scrollDown() {
+    try {
+      const el = viewportRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    } catch {}
+  }
 
-    const { error } = await supabase.from("vendor_messages").insert({
+  async function sendMsg(e) {
+    e?.preventDefault?.();
+    const body = text.trim();
+    if (!body || !session?.user?.id || !threadId) return;
+
+    const optimistic = {
+      id: `tmp_${Date.now()}`,
       thread_id: threadId,
-      sender_role: senderRole, // 'vendor' en panel vendedor
-      message: text
-    });
-    if (error) {
-      alert("No se pudo enviar el mensaje");
-      // revertir
-      setMessages((prev) => prev.filter((m) => m.id !== temp.id));
-      setInput(text);
-    }
-  }
+      sender_role: senderRole,
+      message: body,
+      created_at: new Date().toISOString(),
+      _optimistic: true,
+    };
+    setMessages((m) => [...m, optimistic]);
+    setText("");
+    scrollDown();
 
-  async function closeThread() {
-    if (!threadId) return;
-    if (!confirm("¿Cerrar este hilo?")) return;
-    setClosing(true);
     const { error } = await supabase
-      .from("vendor_threads")
-      .update({ status: "closed" })
-      .eq("id", threadId);
-    setClosing(false);
-    if (error) alert("No se pudo cerrar el hilo");
-    else alert("Hilo cerrado");
-  }
+      .from("vendor_messages")
+      .insert({ thread_id: threadId, sender_role: senderRole, message: body });
 
-  function onKey(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
+    if (error) {
+      // revert
+      setMessages((m) => m.filter((x) => x.id !== optimistic.id));
+      alert("No se pudo enviar el mensaje.");
     }
   }
 
   return (
     <div className="chat">
-      <div className="head">
-        <h3>Chat con cliente</h3>
-        <button className="btn ghost" onClick={closeThread} disabled={closing}>
-          {closing ? "Cerrando…" : "Cerrar hilo"}
-        </button>
-      </div>
-
-      <div className="list" ref={scrollRef}>
-        {messages.map((m) => (
-          <div key={m.id} className={`msg ${m.sender_role === "vendor" || m.sender_role === "admin" ? "me" : ""}`}>
+      <div className="viewport" ref={viewportRef}>
+        {(messages || []).map((m) => (
+          <div key={m.id} className={`msg ${m.sender_role}`}>
             <div className="bubble">
-              <div className="meta">{m.sender_role}</div>
+              <div className="meta">
+                <span className="role">{label(m.sender_role)}</span>
+                <span className="time">{new Date(m.created_at).toLocaleString()}</span>
+              </div>
               <div>{m.message}</div>
             </div>
           </div>
         ))}
-        {messages.length === 0 && <div className="empty">Sin mensajes aún.</div>}
+        {(messages || []).length === 0 && (
+          <div className="empty">Empezá la conversación…</div>
+        )}
       </div>
 
-      <div className="composer">
-        <textarea
+      <form className="composer" onSubmit={sendMsg}>
+        <input
+          className="input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
           placeholder="Escribí un mensaje…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKey}
+          aria-label="Mensaje"
         />
-        <button className="btn primary" onClick={send}>Enviar</button>
-      </div>
+        <button className="btn" type="submit">Enviar</button>
+      </form>
 
       <style jsx>{`
-        .chat { display:flex; flex-direction:column; gap:10px; background:#0c0c0c; border:1px solid #1f1f1f; border-radius:16px; padding:12px; }
-        .head { display:flex; align-items:center; justify-content:space-between; }
-        .list { height: 40vh; overflow:auto; background:#0a0a0a; border:1px solid #1a1a1a; border-radius:12px; padding:10px; }
-        .empty { opacity:.8; text-align:center; padding:12px; }
+        .chat { display:grid; grid-template-rows: 1fr auto; height: 60vh; }
+        .viewport { overflow: auto; padding: 8px; background:#0a0a0a; border:1px solid #1a1a1a; border-radius:12px; }
+        .empty { padding:12px; text-align:center; opacity:.8; }
         .msg { display:flex; margin:8px 0; }
-        .msg.me { justify-content:flex-end; }
-        .bubble { background:#121212; border:1px solid #222; color:#eee; border-radius:12px; padding:8px 10px; max-width:70%; }
-        .msg.me .bubble { background:#171717; border-color:#2a2a2a; }
-        .meta { font-size:.75rem; opacity:.7; margin-bottom:4px; text-transform:uppercase; }
-        .composer { display:flex; gap:8px; }
-        textarea { flex:1; background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:10px; resize:none; height:60px; }
+        .msg.user { justify-content:flex-end; }
+        .msg.vendor { justify-content:flex-start; }
+        .msg.admin { justify-content:center; }
+        .bubble { max-width: 86%; background:#141414; border:1px solid #222; border-radius:12px; padding:8px 10px; color:#fff; }
+        .meta { font-size:.8rem; opacity:.8; margin-bottom:4px; display:flex; gap:8px; }
+        .composer { display:flex; gap:8px; margin-top:8px; }
+        .input { flex:1; padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; }
         .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
-        .btn.ghost { background:transparent; }
-        .btn.primary { background:#1e1e1e; border-color:#3a3a3a; }
       `}</style>
     </div>
   );
+}
+
+function label(r) {
+  if (r === "vendor") return "Vendedor";
+  if (r === "admin") return "Admin";
+  return "Cliente";
 }
