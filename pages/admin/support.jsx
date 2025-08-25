@@ -1,52 +1,123 @@
+// pages/admin/support.jsx
 import Head from "next/head";
-import { useEffect, useState } from "react";
-import { withRoleGuard } from "@/utils/roleGuards";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import ChatBox from "@/components/ChatBox";
 
-function AdminSupport(){
+export default function AdminSupport(){
+  const [session, setSession] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+
   const [threads, setThreads] = useState([]);
-  const [sel, setSel] = useState(null);
+  const [brands, setBrands] = useState({});
+  const [buyers, setBuyers] = useState({});
+  const [activeThreadId, setActiveThreadId] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const list = async () => {
-    const { data } = await supabase.from('support_threads').select('id, status, created_at, brand_id, user_id').order('status', { ascending:true }).order('created_at', { ascending:false });
-    setThreads(data || []);
-  };
-  useEffect(()=>{ list(); },[]);
+  useEffect(()=>{
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
-  const closeThread = async () => {
-    if (!sel) return;
-    await supabase.from('support_threads').update({ status:'closed' }).eq('id', sel.id);
-    setSel(null);
-    list();
-  };
+  useEffect(()=>{
+    if (!session?.user?.id) return;
+    (async ()=>{
+      const { data: me } = await supabase.from("profiles").select("role").eq("user_id", session.user.id).maybeSingle();
+      setIsAdmin(me?.role === "admin");
+    })();
+  }, [session?.user?.id]);
+
+  useEffect(()=>{
+    if (!isAdmin) { setThreads([]); setLoading(false); return; }
+    let cancel = false;
+    (async ()=>{
+      setLoading(true);
+      const { data: ts } = await supabase
+        .from("support_threads")
+        .select("id,brand_id,user_id,status,created_at")
+        .order("status", { ascending:true })
+        .order("created_at", { ascending:false });
+      if (cancel) return;
+      setThreads(ts || []);
+
+      const brandIds = Array.from(new Set((ts||[]).map(t => t.brand_id).filter(Boolean)));
+      if (brandIds.length){
+        const { data: bs } = await supabase.from("brands").select("id,name").in("id", brandIds);
+        const map = {}; (bs||[]).forEach(b => map[b.id] = b.name);
+        if (!cancel) setBrands(map);
+      }
+      const userIds = Array.from(new Set((ts||[]).map(t => t.user_id).filter(Boolean)));
+      if (userIds.length){
+        const { data: ps } = await supabase.from("profiles").select("user_id,full_name,name,email").in("user_id", userIds);
+        const map2 = {}; (ps||[]).forEach(p => map2[p.user_id] = p.full_name || p.name || p.email || "Cliente");
+        if (!cancel) setBuyers(map2);
+      }
+
+      setLoading(false);
+      setActiveThreadId(ts?.[0]?.id || null);
+    })();
+    return () => { cancel = true; };
+  }, [isAdmin]);
+
+  if (!session?.user) {
+    return <div className="container"><div className="status-empty">Ingresá para ver soporte.</div></div>;
+  }
+  if (!isAdmin) {
+    return <div className="container"><div className="status-empty">Acceso solo administradores.</div></div>;
+  }
 
   return (
     <div className="container">
       <Head><title>Soporte — Admin</title></Head>
-      <h1>Tickets</h1>
-      <div className="row" style={{alignItems:'flex-start'}}>
-        <div style={{width:360}}>
-          <div className="card">
-            <div className="card-body">
-              <ul style={{listStyle:'none', padding:0, margin:0}}>
-                {threads.map(t => (
-                  <li key={t.id} style={{padding:'8px 0', borderBottom:'1px solid #1f2937'}}>
-                    <button className="btn btn-ghost" onClick={()=>setSel(t)}>
-                      #{t.id.slice(0,8)} — {t.status}
+      <h1>Soporte (Admin)</h1>
+
+      <div style={{ marginTop: 12, display:"grid", gridTemplateColumns:"320px 1fr", gap: 16 }}>
+        <section className="card" style={{ padding: 12 }}>
+          <h2 style={{ marginTop: 0 }}>Tickets</h2>
+          {loading ? (
+            <div className="skeleton" style={{ height:64, borderRadius:10 }} />
+          ) : threads.length === 0 ? (
+            <div className="card" style={{ padding:12, border:"1px dashed var(--border)", color:"#9aa" }}>No hay hilos.</div>
+          ) : (
+            <ul style={{ listStyle:"none", padding:0, margin:0, display:"grid", gap:8 }}>
+              {threads.map(t => {
+                const title = `${buyers[t.user_id] || "Cliente"} · ${brands[t.brand_id] || "—"}`;
+                const active = t.id === activeThreadId;
+                return (
+                  <li key={t.id}>
+                    <button
+                      className="btn"
+                      onClick={()=>setActiveThreadId(t.id)}
+                      style={{
+                        width:"100%", justifyContent:"flex-start",
+                        background: active ? "var(--brand)" : "var(--panel)",
+                        color: active ? "#000" : "var(--text)",
+                        border: "1px solid var(--border)"
+                      }}
+                    >
+                      <div style={{ textAlign:"left" }}>
+                        <div style={{ fontWeight:600 }}>{title}</div>
+                        <div style={{ fontSize:12, opacity:0.8 }}>
+                          {t.status} · {new Date(t.created_at).toLocaleString("es-AR", { hour12:false })}
+                        </div>
+                      </div>
                     </button>
                   </li>
-                ))}
-                {threads.length===0 && <div className="status-empty">No hay tickets.</div>}
-              </ul>
-            </div>
-          </div>
-        </div>
-        <div style={{flex:1}}>
-          {sel ? <ChatBox threadId={sel.id} adminView onCloseThread={closeThread} /> : <div className="status-empty">Seleccioná un ticket.</div>}
-        </div>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        <section className="card" style={{ padding: 12, minHeight: 520 }}>
+          {!activeThreadId ? (
+            <div className="status-empty">Seleccioná un hilo para ver el chat.</div>
+          ) : (
+            <ChatBox threadId={activeThreadId} onDeleted={()=>setThreads(arr => arr.filter(x => x.id !== activeThreadId))} />
+          )}
+        </section>
       </div>
     </div>
   );
 }
-export default withRoleGuard(AdminSupport, { requireAdmin:true });
