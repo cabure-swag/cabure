@@ -183,7 +183,7 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) 
       const { error: ei } = await supabase.from("order_items").insert(rows);
       if (ei) throw ei;
 
-      // Abrir thread de soporte del comprador (lo va a ver el admin y el vendedor en sus paneles)
+      // Abrir thread de soporte del comprador (lo ve admin y vendedor)
       const { data: thread, error: et } = await supabase
         .from("support_threads")
         .insert({ user_id: buyer_id, brand_id: brand.id, status: "open" })
@@ -350,7 +350,7 @@ export default function BrandPage() {
         !cancelled && setBrand(normalizeBrand(b));
 
         if (b?.id) {
-          // Trae TODO y filtramos en cliente por active y stock (para evitar policies que oculten campos)
+          // Trae TODO y filtramos en cliente por active y stock
           const { data: ps, error: e2 } = await supabase.from("products").select("*").eq("brand_id", b.id).order("created_at", { ascending: false });
           if (e2) throw e2;
           !cancelled && setProductsRaw(Array.isArray(ps) ? ps : []);
@@ -408,7 +408,7 @@ export default function BrandPage() {
       </Head>
 
       <div className="container" style={{ paddingBottom: 56 }}>
-        {/* Header perfil marca + carrito a la derecha (sin login/logout en el carrito) */}
+        {/* Header perfil marca + carrito a la derecha */}
         <section className="card" style={{ display:"grid", gridTemplateColumns:"160px 1fr 360px", gap:16, alignItems:"center", padding:16 }}>
           {/* Logo */}
           <div style={{ width:160, height:160, borderRadius:16, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", background:"var(--panel)", border:"1px dashed var(--border)" }}>
@@ -430,7 +430,7 @@ export default function BrandPage() {
             </div>
           </div>
 
-          {/* Carrito (sin auth buttons) */}
+          {/* Carrito */}
           <aside className="card" style={{ padding:12 }}>
             <div className="row" style={{ alignItems:"center" }}>
               <h3 style={{ margin:0, fontSize:"1rem" }}>Carrito</h3>
@@ -472,7 +472,9 @@ export default function BrandPage() {
         {/* Filtros + búsqueda (sobre el catálogo) */}
         <section className="row" style={{ gap:12, marginTop:16 }}>
           <div className="row" style={{ gap:8, flexWrap:"wrap" }}>
-            {(["Todas", ...Array.from(new Set(productsRaw.map(p => (p?.category || "").trim()).filter(Boolean))))].map(cat => (
+            {(
+              ["Todas", ...Array.from(new Set(productsRaw.map(p => (p?.category || "").trim()).filter(Boolean)))]
+            ).map(cat => (
               <button key={cat} className={`chip ${cat===activeCat ? "chip--active":""}`} onClick={()=>setActiveCat(cat)}>{cat}</button>
             ))}
           </div>
