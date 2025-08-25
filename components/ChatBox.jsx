@@ -1,142 +1,207 @@
 // components/ChatBox.jsx
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-export default function ChatBox({ threadId, adminView = false }) {
+function fmtDate(ts) {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleString("es-AR", { hour12: false });
+  } catch {
+    return ts;
+  }
+}
+
+export default function ChatBox({ threadId }) {
   const [session, setSession] = useState(null);
-  const [messages, setMessages] = useState(null);
+  const [thread, setThread] = useState(null);     // { id, user_id, brand_id, status }
+  const [brand, setBrand] = useState(null);       // { id, name }
+  const [buyer, setBuyer] = useState(null);       // { user_id, email, name }
+  const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
-  const [error, setError] = useState("");
   const listRef = useRef(null);
 
-  // sesión
+  // session
   useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        setSession(data?.session ?? null);
-      } catch {}
-    })();
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub?.subscription?.unsubscribe?.();
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  // cargar y suscribir
+  // carga de contexto (thread, brand, buyer, mensajes)
   useEffect(() => {
     if (!threadId) return;
-    let mounted = true;
+    let cancelled = false;
+    (async () => {
+      // thread
+      const { data: t, error: et } = await supabase
+        .from("support_threads")
+        .select("id, user_id, brand_id, status, created_at")
+        .eq("id", threadId)
+        .maybeSingle();
+      if (et || !t) return;
+      if (cancelled) return;
+      setThread(t);
 
-    async function load() {
-      setError("");
-      try {
-        const { data, error } = await supabase
-          .from("support_messages")
-          .select("id, sender_role, message, created_at")
-          .eq("thread_id", threadId)
-          .order("created_at", { ascending: true });
-        if (error) throw error;
-        if (!mounted) return;
-        setMessages(data || []);
-        // autoscroll
-        setTimeout(() => {
-          listRef.current?.scrollTo?.({ top: listRef.current.scrollHeight, behavior: "auto" });
-        }, 0);
-      } catch (e) {
-        setMessages([]);
-        setError(e.message || "No se pudieron cargar los mensajes.");
+      // brand
+      if (t.brand_id) {
+        const { data: b } = await supabase
+          .from("brands")
+          .select("id,name")
+          .eq("id", t.brand_id)
+          .maybeSingle();
+        if (!cancelled) setBrand(b || null);
+      } else {
+        setBrand(null);
       }
-    }
 
-    load();
+      // buyer profile (nombre/email)
+      let buyerName = null;
+      let buyerEmail = null;
+      {
+        // profiles.name (si lo usás) + email fallback
+        const { data: p } = await supabase
+          .from("profiles")
+          .select("user_id,email,full_name,name")
+          .eq("user_id", t.user_id)
+          .maybeSingle();
+        buyerEmail = p?.email || null;
+        buyerName = p?.full_name || p?.name || null;
 
-    const channel = supabase
-      .channel(`chat-${threadId}`)
+        // fallback: auth.user email
+        if (!buyerEmail) {
+          const { data: u } = await supabase.auth.getUser();
+          if (u?.user?.id === t.user_id) {
+            buyerEmail = u.user.email || null;
+            buyerName = buyerName || u.user.user_metadata?.name || null;
+          }
+        }
+        setBuyer({ user_id: t.user_id, email: buyerEmail, name: buyerName });
+      }
+
+      // mensajes
+      const { data: ms } = await supabase
+        .from("support_messages")
+        .select("id, sender_role, message, created_at")
+        .eq("thread_id", threadId)
+        .order("created_at", { ascending: true });
+      if (!cancelled) setMessages(ms || []);
+    })();
+
+    return () => { cancelled = true; };
+  }, [threadId]);
+
+  // realtime sobre mensajes del hilo
+  useEffect(() => {
+    if (!threadId) return;
+    const ch = supabase
+      .channel(`support_messages_${threadId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "support_messages", filter: `thread_id=eq.${threadId}` },
+        { event: "*", schema: "public", table: "support_messages", filter: `thread_id=eq.${threadId}` },
         (payload) => {
-          setMessages((prev) => {
-            const arr = Array.isArray(prev) ? prev.slice() : [];
-            arr.push(payload.new);
-            return arr;
-          });
-          setTimeout(() => {
-            listRef.current?.scrollTo?.({ top: listRef.current.scrollHeight, behavior: "smooth" });
-          }, 0);
+          if (payload.eventType === "INSERT") {
+            setMessages(prev => [...prev, payload.new]);
+          }
         }
       )
       .subscribe();
-
-    return () => {
-      mounted = false;
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(ch); };
   }, [threadId]);
 
+  // autoscroll
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const isBuyer = session?.user?.id && thread?.user_id && session.user.id === thread.user_id;
+
+  function labelFor(msg) {
+    if (msg.sender_role === "user") {
+      return buyer?.name || buyer?.email || "Cliente";
+    }
+    // vendedores/admin => nombre de marca
+    return brand?.name || "Vendedor";
+  }
+
   async function send(e) {
-    e.preventDefault();
-    if (!text.trim() || !threadId) return;
-    const body = {
-      thread_id: threadId,
-      sender_role: adminView ? "admin" : "user",
-      message: text.trim(),
+    e?.preventDefault();
+    const body = text.trim();
+    if (!body || !threadId) return;
+
+    const sender_role = isBuyer ? "user" : "admin"; // vendors usan 'admin' por CHECK constraint
+
+    // optimistic
+    const tmp = {
+      id: `tmp_${Date.now()}`,
+      sender_role,
+      message: body,
+      created_at: new Date().toISOString()
     };
-    // Optimistic
-    const temp = {
-      id: `tmp-${Date.now()}`,
-      ...body,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => ([...(prev || []), temp]));
+    setMessages(prev => [...prev, tmp]);
     setText("");
 
-    const { error } = await supabase.from("support_messages").insert(body);
+    const { error } = await supabase
+      .from("support_messages")
+      .insert({ thread_id: threadId, sender_role, message: body });
+
     if (error) {
-      setError(error.message || "No se pudo enviar el mensaje.");
-      // revertir si falla (opcional)
-      setMessages((prev) => (prev || []).filter((m) => m.id !== temp.id));
+      // rollback simple
+      setMessages(prev => prev.filter(m => m.id !== tmp.id));
+      alert("No se pudo enviar el mensaje.");
+      setText(body);
     }
   }
 
   return (
-    <div className="card" style={{ padding: 12, display: "flex", flexDirection: "column", height: 420 }}>
-      <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "#0E1012" }}>
-        {!messages ? (
-          <div className="skel" style={{ height: 80 }} />
-        ) : messages.length === 0 ? (
-          <div style={{ opacity: 0.8 }}>Todavía no hay mensajes.</div>
-        ) : (
-          messages.map((m) => (
-            <div key={m.id} style={{ marginBottom: 8, display: "flex", justifyContent: m.sender_role === "admin" ? "flex-end" : "flex-start" }}>
-              <div style={{
-                maxWidth: "80%",
-                background: m.sender_role === "admin" ? "#1F2937" : "#111827",
-                border: "1px solid var(--border)",
-                borderRadius: 10,
-                padding: "8px 10px",
-                fontSize: 14
-              }}>
-                <div style={{ opacity: 0.7, fontSize: 11, marginBottom: 4 }}>{m.sender_role}</div>
-                <div>{m.message}</div>
-              </div>
-            </div>
-          ))
-        )}
+    <div className="card" style={{ padding: 12 }}>
+      {/* encabezado */}
+      <div className="row" style={{ alignItems: "baseline" }}>
+        <h3 style={{ margin: 0 }}>Chat</h3>
+        <div style={{ flex: 1 }} />
+        {brand?.name && <div style={{ color: "#9aa", fontSize: 12 }}>{brand.name}</div>}
       </div>
 
-      {error && <div className="card" style={{ marginTop: 8, padding: 8, border: "1px solid #a33" }}>{error}</div>}
+      {/* lista de mensajes */}
+      <div ref={listRef} style={{
+        marginTop: 12, height: 360, overflowY: "auto",
+        padding: 8, border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel)"
+      }}>
+        {messages.length === 0 ? (
+          <div style={{ color: "#9aa", fontSize: 14 }}>No hay mensajes aún.</div>
+        ) : messages.map(m => {
+          const me = isBuyer ? (m.sender_role === "user") : (m.sender_role !== "user");
+          return (
+            <div key={m.id} style={{ marginBottom: 10, display: "flex", flexDirection: "column", alignItems: me ? "flex-end" : "flex-start" }}>
+              <div style={{ fontSize: 11, color: "#9aa", marginBottom: 2 }}>
+                {labelFor(m)} · {fmtDate(m.created_at)}
+              </div>
+              <div style={{
+                maxWidth: "85%",
+                background: me ? "var(--brand)" : "#111",
+                color: me ? "#000" : "var(--text)",
+                border: "1px solid var(--border)",
+                padding: "8px 10px",
+                borderRadius: 10,
+                whiteSpace: "pre-wrap"
+              }}>
+                {m.message}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
-      <form onSubmit={send} className="row" style={{ gap: 8, marginTop: 8 }}>
+      {/* input */}
+      <form className="row" onSubmit={send} style={{ marginTop: 10, gap: 8 }}>
         <input
           className="input"
-          placeholder="Escribí tu mensaje…"
+          placeholder="Escribí un mensaje…"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={e => setText(e.target.value)}
           aria-label="Mensaje"
         />
-        <button className="btn" type="submit" disabled={!threadId || !text.trim()}>
-          Enviar
-        </button>
+        <button className="btn btn-primary" type="submit">Enviar</button>
       </form>
     </div>
   );
