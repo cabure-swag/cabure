@@ -21,21 +21,21 @@ export default function Soporte(){
   useEffect(() => {
     if (!session) return;
     (async () => {
+      // si viene un thread en la URL y pertenece al comprador, usarlo
       if (requestedThread) {
         const { data: t } = await supabase
           .from("support_threads")
           .select("id,user_id,status")
           .eq("id", requestedThread)
           .maybeSingle();
-        if (t && t.user_id === session.user.id) {
-          setThreadId(t.id);
-          return;
-        }
+        if (t && t.user_id === session.user.id) { setThreadId(t.id); return; }
       }
+      // sino: abrir/usar el hilo abierto del comprador (sin brand específica)
       const user_id = session.user.id;
       let { data: t } = await supabase
         .from("support_threads")
-        .select("id").eq("user_id", user_id).eq("status", "open")
+        .select("id").eq("user_id", user_id).eq("status","open")
+        .order("created_at",{ ascending:false })
         .maybeSingle();
       if (!t) {
         const { data } = await supabase
@@ -49,27 +49,22 @@ export default function Soporte(){
     })();
   }, [session, requestedThread]);
 
-  const login = async () => { await supabase.auth.signInWithOAuth({ provider: "google" }); };
+  const login = async () => { await supabase.auth.signInWithOAuth({ provider:'google' }); };
 
   return (
     <div className="container">
-      <Head><title>Chat con el vendedor — CABURE.STORE</title></Head>
-
+      <Head><title>Soporte — CABURE.STORE</title></Head>
       {!session ? (
         <div className="status-empty">
-          <p>Ingresá para abrir el chat.</p>
+          <p>Ingresá para abrir el chat de soporte.</p>
           <button className="btn btn-primary" onClick={login} aria-label="Ingresar con Google">Ingresar con Google</button>
         </div>
       ) : (
         <>
-          <div className="row" style={{justifyContent:"space-between", alignItems:"center"}}>
-            <h1>Chat con el vendedor</h1>
+          <div className="row" style={{justifyContent:'space-between', alignItems:"center"}}>
+            <h1>Soporte</h1>
           </div>
-          {threadId ? (
-            <ChatBox threadId={threadId} />
-          ) : (
-            <div className="status-loading skeleton" style={{height:80}}/>
-          )}
+          {threadId ? <ChatBox threadId={threadId} /> : <div className="status-loading skeleton" style={{height:80}}/>}
         </>
       )}
     </div>
