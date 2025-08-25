@@ -2,11 +2,11 @@
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-// Panel de carrito simple embebido (para no romper si faltan imports externos)
-function CartPanel() {
+/** Carrito simple embebido para no romper si falta tu Cart real */
+function CartPanelBare() {
   const [open, setOpen] = useState(true);
   return (
     <aside className="card" style={{ padding: 12 }}>
@@ -46,11 +46,7 @@ function CartPanel() {
 
 function currency(n) {
   const v = Number(n || 0);
-  return v.toLocaleString("es-AR", {
-    style: "currency",
-    currency: "ARS",
-    maximumFractionDigits: 0,
-  });
+  return v.toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
 }
 
 export default function BrandPage() {
@@ -70,32 +66,31 @@ export default function BrandPage() {
     (async () => {
       setLoading(true);
       try {
-        // Marca
+        // 1) MARCA: seleccionar TODO y mapear campos (para evitar mismatch de nombres)
         const { data: b, error: e1 } = await supabase
           .from("brands")
-          .select("id, name, slug, description, instagram_url, logo_url, color")
+          .select("*")
           .eq("slug", slug)
           .maybeSingle();
         if (e1) throw e1;
 
+        // Si RLS no permite leer o no existe, b será null.
         if (!cancelled) setBrand(b || null);
 
-        // Productos (sin filtrar en SQL para evitar problemas de tipos)
+        // 2) PRODUCTOS: traer todos los de la marca (policy ya filtra active/stock si querés)
         if (b?.id) {
           const { data: ps, error: e2 } = await supabase
             .from("products")
-            .select(
-              "id, name, price, stock, active, category, subcategory, images, brand_id"
-            )
+            .select("*")
             .eq("brand_id", b.id)
             .order("id", { ascending: false });
           if (e2) throw e2;
-          if (!cancelled) setProductsRaw(ps || []);
+          if (!cancelled) setProductsRaw(Array.isArray(ps) ? ps : []);
         } else {
           if (!cancelled) setProductsRaw([]);
         }
       } catch (err) {
-        console.error("[/marcas/[slug]] fetch error:", err);
+        console.error("[/marcas/[slug]] error:", err);
         if (!cancelled) {
           setBrand(null);
           setProductsRaw([]);
@@ -110,12 +105,32 @@ export default function BrandPage() {
     };
   }, [slug]);
 
-  // Filtrado seguro en cliente
+  // Normalizo campos de marca para UI (logo/instagram pueden tener nombres distintos)
+  const brandUI = useMemo(() => {
+    if (!brand) return null;
+    const logo =
+      brand.logo_url || brand.logo || brand.image || brand.avatar_url || null;
+    const instagram =
+      brand.instagram_url || brand.instagram || brand.ig || null;
+    return {
+      id: brand.id,
+      name: brand.name || brand.title || "Marca",
+      description: brand.description || brand.bio || "",
+      slug: brand.slug,
+      logo,
+      instagram,
+      color: brand.color || null,
+    };
+  }, [brand]);
+
+  // Filtro en cliente por si stock es texto. (Aun si la policy ya filtra)
   const products = useMemo(() => {
     const base = Array.isArray(productsRaw) ? productsRaw : [];
-    let data = base.filter(
-      (p) => Boolean(p?.active) && Number(p?.stock || 0) > 0
-    );
+    let data = base.filter((p) => {
+      const active = Boolean(p?.active);
+      const stockNum = Number((p?.stock ?? 0));
+      return active && stockNum > 0;
+    });
     if (activeCat && activeCat !== "Todas") {
       data = data.filter(
         (p) => (p?.category || "").trim() === (activeCat || "").trim()
@@ -128,7 +143,7 @@ export default function BrandPage() {
     return data;
   }, [productsRaw, activeCat, search]);
 
-  // Categorías únicas (de los visibles)
+  // Categorías para chips
   const categories = useMemo(() => {
     const s = new Set();
     (Array.isArray(productsRaw) ? productsRaw : []).forEach((p) => {
@@ -138,22 +153,14 @@ export default function BrandPage() {
     return ["Todas", ...Array.from(s)];
   }, [productsRaw]);
 
-  const handleAdd = useCallback((product) => {
-    // acá integrás con tu contexto de carrito si lo deseas
-    // por ahora dejamos no-op para no romper
-    console.log("ADD ->", product?.id, product?.name);
-  }, []);
-
   return (
     <>
       <Head>
-        <title>
-          {brand?.name ? `${brand.name} — CABURE.STORE` : "CABURE.STORE"}
-        </title>
+        <title>{brandUI?.name ? `${brandUI.name} — CABURE.STORE` : "CABURE.STORE"}</title>
       </Head>
 
-      <div className="container" style={{ paddingBottom: 48 }}>
-        {/* HEADER (mismo estilo base) */}
+      <div className="container" style={{ paddingBottom: 56 }}>
+        {/* HEADER (logo izq, datos centro, carrito der) */}
         <section
           className="card"
           style={{
@@ -164,7 +171,7 @@ export default function BrandPage() {
             padding: 16,
           }}
         >
-          {/* Logo grande a la izquierda, usando todo el cuadrado */}
+          {/* LOGO (ocupa todo el cuadrado) */}
           <div
             style={{
               width: 160,
@@ -178,10 +185,10 @@ export default function BrandPage() {
               border: "1px dashed var(--border)",
             }}
           >
-            {brand?.logo_url ? (
+            {brandUI?.logo ? (
               <img
-                src={brand.logo_url}
-                alt={brand?.name || "logo"}
+                src={brandUI.logo}
+                alt={brandUI?.name || "logo"}
                 style={{ width: "100%", height: "100%", objectFit: "contain" }}
               />
             ) : (
@@ -189,18 +196,18 @@ export default function BrandPage() {
             )}
           </div>
 
-          {/* Centro: título y descripción, Instagram */}
+          {/* DATOS */}
           <div>
-            <h1 style={{ margin: 0 }}>{brand?.name || "Marca"}</h1>
-            {brand?.description && (
+            <h1 style={{ margin: 0 }}>{brandUI?.name || "Marca"}</h1>
+            {brandUI?.description && (
               <p style={{ margin: "6px 0 12px 0", color: "#bbb" }}>
-                {brand.description}
+                {brandUI.description}
               </p>
             )}
             <div className="row" style={{ gap: 8 }}>
-              {brand?.instagram_url && (
+              {brandUI?.instagram && (
                 <a
-                  href={brand.instagram_url}
+                  href={brandUI.instagram}
                   target="_blank"
                   rel="noreferrer"
                   className="btn btn-ghost"
@@ -210,25 +217,25 @@ export default function BrandPage() {
                   Instagram
                 </a>
               )}
-              {brand?.slug && (
-                <Link href={`/marcas/${brand.slug}`} className="btn btn-ghost">
+              {brandUI?.slug && (
+                <Link href={`/marcas/${brandUI.slug}`} className="btn btn-ghost">
                   Perfil público
                 </Link>
               )}
             </div>
           </div>
 
-          {/* Derecha: carrito fijo */}
-          <CartPanel />
+          {/* CARRITO */}
+          <CartPanelBare />
         </section>
 
-        {/* CONTROLES encima del catálogo (chips + buscador) */}
+        {/* CONTROLES SOBRE EL CATÁLOGO */}
         <section className="row" style={{ gap: 12, marginTop: 16 }}>
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             {categories.map((cat) => (
               <button
                 key={cat}
-                className={`chip ${activeCat === cat ? "chip--active" : ""}`}
+                className={`chip ${cat === activeCat ? "chip--active" : ""}`}
                 onClick={() => setActiveCat(cat)}
               >
                 {cat}
@@ -246,7 +253,7 @@ export default function BrandPage() {
           />
         </section>
 
-        {/* GRID DEL CATÁLOGO (4 por fila) */}
+        {/* CATÁLOGO (4 por fila) */}
         <section
           style={{
             marginTop: 16,
@@ -272,9 +279,7 @@ export default function BrandPage() {
               No hay productos para mostrar.
             </div>
           ) : (
-            products.map((p) => (
-              <ProductCard key={p.id} product={p} onAdd={() => handleAdd(p)} />
-            ))
+            products.map((p) => <ProductCard key={p.id} product={p} />)
           )}
         </section>
       </div>
@@ -310,12 +315,9 @@ export default function BrandPage() {
   );
 }
 
-function ProductCard({ product, onAdd }) {
+function ProductCard({ product }) {
   const imgs = Array.isArray(product?.images) ? product.images : [];
-  const [idx, setIdx] = useState(0);
-
-  const prev = () => setIdx((i) => (imgs.length ? (i - 1 + imgs.length) % imgs.length : 0));
-  const next = () => setIdx((i) => (imgs.length ? (i + 1) % imgs.length : 0));
+  const img = imgs?.[0] || null;
 
   return (
     <article className="card" style={{ padding: 12 }}>
@@ -330,9 +332,9 @@ function ProductCard({ product, onAdd }) {
           border: "1px dashed var(--border)",
         }}
       >
-        {imgs.length ? (
+        {img ? (
           <img
-            src={imgs[idx]}
+            src={img}
             alt={product?.name || "producto"}
             style={{ width: "100%", height: "100%", objectFit: "cover" }}
           />
@@ -351,30 +353,11 @@ function ProductCard({ product, onAdd }) {
             Sin imagen
           </div>
         )}
-
-        {imgs.length > 1 && (
-          <>
-            <button
-              onClick={prev}
-              className="btn btn-ghost"
-              style={{ position: "absolute", left: 8, top: "calc(50% - 18px)" }}
-              aria-label="Anterior"
-            >
-              ◀
-            </button>
-            <button
-              onClick={next}
-              className="btn btn-ghost"
-              style={{ position: "absolute", right: 8, top: "calc(50% - 18px)" }}
-              aria-label="Siguiente"
-            >
-              ▶
-            </button>
-          </>
-        )}
       </div>
 
-      <h3 style={{ margin: "8px 0 0 0", fontSize: "1rem" }}>{product?.name || "Producto"}</h3>
+      <h3 style={{ margin: "8px 0 0 0", fontSize: "1rem" }}>
+        {product?.name || "Producto"}
+      </h3>
       <div style={{ color: "#9aa", fontSize: 12, marginTop: 2 }}>
         {(product?.category || "").trim() || "—"}
       </div>
@@ -382,9 +365,7 @@ function ProductCard({ product, onAdd }) {
       <div className="row" style={{ alignItems: "center", marginTop: 8 }}>
         <strong>{currency(product?.price)}</strong>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-primary" onClick={onAdd}>
-          Agregar
-        </button>
+        <button className="btn btn-primary">Agregar</button>
       </div>
     </article>
   );
