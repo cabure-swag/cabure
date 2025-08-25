@@ -1,592 +1,540 @@
-// pages/vendor/index.jsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
+import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import ChatBox from "@/components/ChatBox";
+import VendorChatBox from "@/components/VendorChatBox";
 
-const TABS = ["Chats", "Catálogo", "Pedidos"];
-const MAX_IMAGES = 5;
-const BUCKET = "product-images";
-
-function currency(n) {
-  const v = Number(n || 0);
-  return isNaN(v) ? "$0" : v.toLocaleString("es-AR", { minimumFractionDigits: 0 });
-}
-
-function clampInt(n, min = 0, max = 999999) {
-  const v = parseInt(n ?? 0, 10);
-  if (isNaN(v)) return min;
-  return Math.max(min, Math.min(max, v));
-}
-
-function nowIso() { return new Date().toISOString(); }
+function currency(n) { return new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0); }
 
 export default function VendorPage() {
   const [session, setSession] = useState(null);
-  const [tab, setTab] = useState("Chats");
-
-  // marcas donde soy vendedor
-  const [brands, setBrands] = useState([]);
+  const [myRole, setMyRole] = useState(null);
+  const [vendorBrands, setVendorBrands] = useState([]);
   const [brandId, setBrandId] = useState(null);
-  const activeBrand = useMemo(() => brands.find(b => b.id === brandId) || null, [brands, brandId]);
 
-  // --- CHATS (igual que antes) ---
+  // Tabs: catalog | orders | chats
+  const [tab, setTab] = useState("catalog");
+
+  // Catalog state
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [products, setProducts] = useState([]);
+  const [addingOpen, setAddingOpen] = useState(false);
+  const [savingId, setSavingId] = useState(null);
+
+  // Orders state
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [orders, setOrders] = useState([]);
+
+  // Chats state
   const [threads, setThreads] = useState([]);
   const [loadingThreads, setLoadingThreads] = useState(false);
-  const [activeThreadId, setActiveThreadId] = useState(null);
-  const [buyerMap, setBuyerMap] = useState({});
-
-  // --- CATALOGO ---
-  const [products, setProducts] = useState([]); // [{...product, images: [{id,url,position}]}]
-  const [loadingProducts, setLoadingProducts] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [activeThread, setActiveThread] = useState(null);
+  const [profilesMap, setProfilesMap] = useState({}); // user_id -> email/name
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session || null);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s || null);
+    });
+    return () => listener?.subscription?.unsubscribe();
   }, []);
 
-  // cargar marcas asignadas
   useEffect(() => {
     if (!session?.user?.id) return;
-    let cancelled = false;
     (async () => {
-      const { data, error } = await supabase
-        .from("brand_users")
-        .select("brand_id, brands!inner(id,name,slug)")
-        .eq("user_id", session.user.id);
-      if (error) { console.error(error); return; }
-      const bs = (data || []).map(r => r.brands).filter(Boolean);
-      if (!cancelled) {
-        setBrands(bs);
-        if (bs.length && !brandId) setBrandId(bs[0].id);
+      // Role
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("role,email")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+      setMyRole(prof?.role || null);
+
+      // Brands donde soy vendor o admin ve todas
+      if (prof?.role === "admin") {
+        const { data: bAll } = await supabase
+          .from("brands")
+          .select("id,name,slug")
+          .eq("active", true)
+          .is("deleted_at", null)
+          .order("name");
+        setVendorBrands(bAll || []);
+        if (!brandId && (bAll?.length)) setBrandId(bAll[0].id);
+      } else {
+        // buscar mis marcas por brand_users
+        const { data: bu } = await supabase
+          .from("brand_users")
+          .select("brand_id")
+          .eq("user_id", session.user.id);
+        const ids = (bu || []).map((r) => r.brand_id);
+        if (ids.length) {
+          const { data: bMine } = await supabase
+            .from("brands")
+            .select("id,name,slug")
+            .in("id", ids)
+            .eq("active", true)
+            .is("deleted_at", null)
+            .order("name");
+          setVendorBrands(bMine || []);
+          if (!brandId && (bMine?.length)) setBrandId(bMine[0].id);
+        } else {
+          setVendorBrands([]);
+          setBrandId(null);
+        }
       }
     })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id]);
 
-  // --------- CHATS ----------
+  // Load data per brand/tab
   useEffect(() => {
-    if (!activeBrand?.id) { setThreads([]); setActiveThreadId(null); return; }
-    let cancelled = false;
-    (async () => {
-      setLoadingThreads(true);
-      try {
-        const { data: ts } = await supabase
-          .from("support_threads")
-          .select("id,user_id,status,created_at")
-          .eq("brand_id", activeBrand.id)
-          .order("status", { ascending: true })
-          .order("created_at", { ascending: false });
-        if (!cancelled) {
-          setThreads(ts || []);
-          setActiveThreadId(ts?.[0]?.id || null);
-        }
-      } finally {
-        if (!cancelled) setLoadingThreads(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [activeBrand?.id]);
+    if (!brandId) return;
+    if (tab === "catalog") loadProducts();
+    if (tab === "orders") loadOrders();
+    if (tab === "chats") loadThreads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandId, tab]);
 
-  useEffect(() => {
-    if (!threads.length) { setBuyerMap({}); return; }
-    let cancelled = false;
-    (async () => {
-      const ids = Array.from(new Set(threads.map(t => t.user_id).filter(Boolean)));
-      if (!ids.length) return;
-      const { data: profiles } = await supabase
-        .from("profiles")
-        .select("user_id,email,full_name,name")
-        .in("user_id", ids);
-      const map = {};
-      (profiles || []).forEach(p => { map[p.user_id] = p.full_name || p.name || p.email || "Cliente"; });
-      if (!cancelled) setBuyerMap(map);
-    })();
-    return () => { cancelled = true; };
-  }, [threads]);
-
-  useEffect(() => {
-    if (!activeBrand?.id) return;
-    const ch = supabase
-      .channel(`threads_${activeBrand.id}`)
-      .on("postgres_changes",
-        { event: "*", schema: "public", table: "support_threads", filter: `brand_id=eq.${activeBrand.id}` },
-        async () => {
-          const { data: ts } = await supabase
-            .from("support_threads")
-            .select("id,user_id,status,created_at")
-            .eq("brand_id", activeBrand.id)
-            .order("status", { ascending: true })
-            .order("created_at", { ascending: false });
-          setThreads(ts || []);
-        }
-      ).subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [activeBrand?.id]);
-
-  // --------- CATALOGO ----------
   async function loadProducts() {
-    if (!activeBrand?.id) { setProducts([]); return; }
     setLoadingProducts(true);
-    try {
-      const { data: prods, error } = await supabase
-        .from("products")
-        .select("id,brand_id,name,price,stock,category,subcategory,active,image_url,created_at")
-        .eq("brand_id", activeBrand.id)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false });
-      if (error) { console.error(error); setProducts([]); return; }
-      const list = prods || [];
+    const { data, error } = await supabase
+      .from("products")
+      .select("id,name,price,stock,active,image_url,category,subcategory,created_at,deleted_at")
+      .eq("brand_id", brandId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false });
+    setLoadingProducts(false);
+    if (!error) setProducts(data || []);
+  }
 
-      // Intentamos traer product_images; si no existe la tabla, seguimos con la imagen simple
-      let imgsByProduct = {};
-      if (list.length) {
-        const ids = list.map(p => p.id);
-        const { data: imgs, error: eImg } = await supabase
-          .from("product_images")
-          .select("id,product_id,url,position")
-          .in("product_id", ids)
-          .order("position", { ascending: true });
-        if (!eImg && imgs) {
-          imgsByProduct = imgs.reduce((acc, it) => {
-            (acc[it.product_id] ||= []).push({ id: it.id, url: it.url, position: it.position });
-            return acc;
-          }, {});
+  async function loadOrders() {
+    setLoadingOrders(true);
+    const { data, error } = await supabase
+      .from("orders")
+      .select("id,buyer_id,total,status,payment_method,created_at")
+      .eq("brand_id", brandId)
+      .order("created_at", { ascending: false });
+    setLoadingOrders(false);
+    if (!error) setOrders(data || []);
+  }
+
+  async function loadThreads() {
+    setLoadingThreads(true);
+    const { data, error } = await supabase
+      .from("vendor_threads")
+      .select("id,user_id,status,created_at")
+      .eq("brand_id", brandId)
+      .order("created_at", { ascending: false });
+    setLoadingThreads(false);
+    if (!error) {
+      setThreads(data || []);
+      // mapear perfiles
+      const uids = Array.from(new Set((data || []).map((t) => t.user_id)));
+      if (uids.length) {
+        const { data: profs } = await supabase
+          .from("profiles")
+          .select("user_id,email")
+          .in("user_id", uids);
+        const map = {};
+        (profs || []).forEach((p) => (map[p.user_id] = p.email));
+        setProfilesMap(map);
+      }
+    }
+  }
+
+  // CSV export
+  function exportOrdersCSV() {
+    const rows = [
+      ["order_id","created_at","buyer_id","total","payment_method","status"]
+    ];
+    (orders || []).forEach(o => {
+      rows.push([o.id, o.created_at, o.buyer_id, String(o.total || 0), o.payment_method || "", o.status || ""]);
+    });
+    const csv = rows.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pedidos.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function createOrUpdateProduct(e, product) {
+    e?.preventDefault?.();
+    setSavingId(product?.id || "new");
+
+    try {
+      const form = e?.target?.closest?.("form");
+      const fd = form ? new FormData(form) : null;
+      const payload = {
+        name: fd ? (fd.get("name") || "").toString().trim() : (product?.name || ""),
+        price: fd ? Number(fd.get("price") || 0) : Number(product?.price || 0),
+        stock: fd ? Number(fd.get("stock") ?? 1) : Number(product?.stock ?? 1),
+        category: fd ? (fd.get("category") || "").toString() : (product?.category || null),
+        subcategory: fd ? (fd.get("subcategory") || "").toString() : (product?.subcategory || null),
+        active: fd ? (fd.get("active") === "on") : !!product?.active
+      };
+
+      // Subida de imágenes (hasta 5). La primera se guarda en image_url.
+      let files = fd ? fd.getAll("images") : [];
+      files = files?.filter(Boolean) || [];
+      let image_url = product?.image_url || null;
+      const newImages = [];
+
+      if (files.length) {
+        for (let i = 0; i < Math.min(files.length, 5); i++) {
+          const f = files[i];
+          if (!(f instanceof File)) continue;
+          const path = `${brandId}/${Date.now()}_${i}_${f.name.replace(/\s+/g, "_")}`;
+          const { error: upErr } = await supabase.storage.from("product-images").upload(path, f, {
+            cacheControl: "3600", upsert: false, contentType: f.type || "image/jpeg"
+          });
+          if (upErr) { alert("No se pudo subir una imagen."); continue; }
+          const { data: pub } = supabase.storage.from("product-images").getPublicUrl(path);
+          const url = pub?.publicUrl;
+          if (url) newImages.push(url);
+        }
+        if (newImages[0]) image_url = newImages[0];
+      }
+
+      if (!product?.id) {
+        // Crear
+        const { data: ins, error: insErr } = await supabase
+          .from("products")
+          .insert({
+            brand_id: brandId,
+            name: payload.name,
+            price: payload.price,
+            stock: Number.isFinite(payload.stock) ? payload.stock : 1,
+            category: payload.category || null,
+            subcategory: payload.subcategory || null,
+            active: payload.active,
+            image_url: image_url || null
+          })
+          .select("id")
+          .maybeSingle();
+        if (insErr) throw insErr;
+
+        // Inserta imágenes extra (si existe tabla product_images)
+        if (newImages.length > 0) {
+          const rows = newImages.map((url, i) => ({ product_id: ins.id, url, position: i }));
+          await supabase.from("product_images").insert(rows);
+        }
+      } else {
+        // Editar
+        const { error: updErr } = await supabase
+          .from("products")
+          .update({
+            name: payload.name,
+            price: payload.price,
+            stock: Number.isFinite(payload.stock) ? payload.stock : 1,
+            category: payload.category || null,
+            subcategory: payload.subcategory || null,
+            active: payload.active,
+            image_url: image_url || product.image_url || null
+          })
+          .eq("id", product.id);
+        if (updErr) throw updErr;
+
+        if (newImages.length > 0) {
+          const rows = newImages.map((url, i) => ({ product_id: product.id, url, position: i }));
+          await supabase.from("product_images").insert(rows);
         }
       }
 
-      setProducts(list.map(p => ({
-        ...p,
-        images: (imgsByProduct[p.id] && imgsByProduct[p.id].length)
-          ? imgsByProduct[p.id]
-          : (p.image_url ? [{ id: "legacy", url: p.image_url, position: 0 }] : [])
-      })));
+      setAddingOpen(false);
+      await loadProducts();
+      alert("Guardado ✅");
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "No se pudo guardar el producto");
     } finally {
-      setLoadingProducts(false);
+      setSavingId(null);
     }
   }
 
-  useEffect(() => { loadProducts(); /* eslint-disable-next-line */ }, [activeBrand?.id]);
-
-  async function createProduct(form) {
-    if (!activeBrand?.id) return;
-    const name = form.name.value.trim();
-    const price = Number(form.price.value || 0);
-    const stock = clampInt(form.stock.value || 1, 0);
-    const category = form.category.value.trim() || null;
-    const subcategory = form.subcategory.value.trim() || null;
-    if (!name) { alert("Nombre es obligatorio"); return; }
-    if (price <= 0) { alert("Precio debe ser mayor a 0"); return; }
-
-    setCreating(true);
-    try {
-      const payload = {
-        brand_id: activeBrand.id,
-        name, price, stock,
-        category, subcategory,
-        active: stock > 0, // si stock 0, lo dejamos inactivo
-      };
-      const { data: inserted, error } = await supabase
-        .from("products")
-        .insert(payload)
-        .select("id")
-        .maybeSingle();
-      if (error) throw error;
-
-      // subir imágenes si adjuntaron
-      const files = Array.from(form.images?.files || []);
-      if (files.length) {
-        await uploadImagesForProduct(inserted.id, files.slice(0, MAX_IMAGES));
-      }
-
-      form.reset();
-      setCreating(false);
-      await loadProducts();
-    } catch (e) {
-      console.error(e);
-      setCreating(false);
-      alert(e.message || "No se pudo crear el producto");
-    }
-  }
-
-  async function uploadImagesForProduct(productId, files) {
-    // contamos actuales para no pasar los 5
-    const current = products.find(p => p.id === productId)?.images || [];
-    const remaining = Math.max(0, MAX_IMAGES - current.length);
-    const toUpload = files.slice(0, remaining);
-    if (!toUpload.length) { alert("Máximo 5 imágenes por producto."); return; }
-
-    let inserts = [];
-    for (let i = 0; i < toUpload.length; i++) {
-      const file = toUpload[i];
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `${activeBrand.id}/${productId}/${Date.now()}_${i}.${ext}`;
-      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
-        upsert: true, cacheControl: "3600", contentType: file.type || "image/jpeg"
-      });
-      if (upErr) { console.error(upErr); continue; }
-      const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
-      const url = pub?.publicUrl || null;
-      if (url) inserts.push({ product_id: productId, url, position: (current.length + i) });
-    }
-
-    if (inserts.length) {
-      const { error } = await supabase.from("product_images").insert(inserts);
-      if (error) console.error(error);
-    }
-  }
-
-  async function updateProduct(p, patch) {
-    const next = { ...p, ...patch };
-    // si stock 0 => active false
-    if (typeof next.stock === "number" && next.stock <= 0) next.active = false;
-
-    // Optimistic UI
-    setProducts(arr => arr.map(x => x.id === p.id ? next : x));
-
-    const payload = {
-      name: next.name,
-      price: next.price,
-      stock: next.stock,
-      category: next.category,
-      subcategory: next.subcategory,
-      active: next.active
-    };
-    const { error } = await supabase.from("products").update(payload).eq("id", p.id);
-    if (error) {
-      console.error(error);
-      alert("No se pudo guardar. Se revertirá el cambio.");
-      // revertir
-      await loadProducts();
-    }
-  }
-
-  async function deleteProduct(p) {
-    if (!confirm(`Eliminar "${p.name}"? (soft delete)`)) return;
-    // Optimistic
-    const prev = products;
-    setProducts(arr => arr.filter(x => x.id !== p.id));
-    const { error } = await supabase.from("products").update({ deleted_at: nowIso(), active: false }).eq("id", p.id);
-    if (error) {
-      alert("No se pudo eliminar.");
-      setProducts(prev);
-    }
-  }
-
-  async function removeImage(pi) {
-    if (!confirm("Quitar imagen?")) return;
-    // tratamos de borrar de Storage si es URL pública de nuestro bucket
-    try {
-      const marker = `/storage/v1/object/public/${BUCKET}/`;
-      if (pi.url.includes(marker)) {
-        const path = pi.url.split(marker)[1];
-        if (path) await supabase.storage.from(BUCKET).remove([path]);
-      }
-    } catch (_) {}
-    const { error } = await supabase.from("product_images").delete().eq("id", pi.id);
-    if (error) { console.error(error); alert("No se pudo quitar la imagen"); }
+  async function softDeleteProduct(p) {
+    if (!confirm(`Eliminar "${p.name}"?`)) return;
+    const { error } = await supabase
+      .from("products")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", p.id);
+    if (error) { alert("No se pudo eliminar"); return; }
     await loadProducts();
   }
 
-  // ---------- UI helpers ----------
-  function ProductCard({ p }) {
-    const [local, setLocal] = useState({
-      name: p.name || "",
-      price: p.price || 0,
-      stock: typeof p.stock === "number" ? p.stock : 1,
-      category: p.category || "",
-      subcategory: p.subcategory || "",
-      active: !!p.active
-    });
-    const fileRef = useRef(null);
-
-    useEffect(() => {
-      setLocal({
-        name: p.name || "",
-        price: p.price || 0,
-        stock: typeof p.stock === "number" ? p.stock : 1,
-        category: p.category || "",
-        subcategory: p.subcategory || "",
-        active: !!p.active
-      });
-    }, [p.id]);
-
-    const cover = (p.images && p.images[0]?.url) || null;
-
+  if (!session) {
     return (
-      <div className="card" style={{ padding: 12 }}>
-        {/* imagen cuadrada */}
-        <div style={{
-          width: "100%", aspectRatio: "1 / 1", borderRadius: 12, overflow: "hidden",
-          border: "1px solid var(--border)", background: "#0d0f12", display: "grid", placeItems: "center"
-        }}>
-          {cover ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={cover} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          ) : (
-            <div style={{ color: "#89a", fontSize: 12 }}>Sin imagen</div>
-          )}
-        </div>
-
-        {/* mini tira de imágenes con borrar */}
-        {p.images?.length ? (
-          <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-            {p.images.map(pi => (
-              <div key={pi.id} style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={pi.url} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }} />
-                {pi.id !== "legacy" && (
-                  <button
-                    className="btn btn-ghost"
-                    style={{ position: "absolute", top: -8, right: -8, borderRadius: 999, padding: "2px 6px" }}
-                    onClick={() => removeImage(pi)}
-                    title="Quitar imagen"
-                    aria-label="Quitar imagen"
-                  >✕</button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {/* subir más imágenes */}
-        <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }}
-                 onChange={async (e)=>{ const files = Array.from(e.target.files||[]); if (files.length){ await uploadImagesForProduct(p.id, files); await loadProducts(); e.target.value=""; } }} />
-          <button className="btn" onClick={()=>fileRef.current?.click()} disabled={(p.images?.length||0) >= MAX_IMAGES}>
-            Agregar imagen{(p.images?.length||0) ? ` (${p.images.length}/${MAX_IMAGES})` : ""}
-          </button>
-        </div>
-
-        {/* campos */}
-        <div className="row" style={{ gap: 8, marginTop: 10 }}>
-          <input className="input" placeholder="Nombre" value={local.name} onChange={e=>setLocal(s=>({...s,name:e.target.value}))} />
-        </div>
-        <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <div className="row" style={{ gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 12, color: "#9aa" }}>Precio</span>
-            <input className="input" type="number" min="0" step="1" value={local.price}
-                   onChange={e=>setLocal(s=>({...s,price: clampInt(e.target.value,0)}))}
-                   style={{ width: 120 }} />
-            <span style={{ fontSize: 12, color: "#9aa" }}>${currency(local.price)}</span>
-          </div>
-          <div className="row" style={{ gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 12, color: "#9aa" }}>Stock</span>
-            <input className="input" type="number" min="0" step="1" value={local.stock}
-                   onChange={e=>setLocal(s=>({...s,stock: clampInt(e.target.value,0)}))}
-                   style={{ width: 96 }} />
-          </div>
-          <label className="row" style={{ gap: 6, alignItems: "center" }}>
-            <input type="checkbox" checked={local.active} onChange={e=>setLocal(s=>({...s,active:e.target.checked}))} />
-            <span style={{ fontSize: 12 }}>Activo</span>
-          </label>
-        </div>
-        <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <input className="input" placeholder="Categoría (opcional)" value={local.category} onChange={e=>setLocal(s=>({...s,category:e.target.value}))} />
-          <input className="input" placeholder="Subcategoría (opcional)" value={local.subcategory} onChange={e=>setLocal(s=>({...s,subcategory:e.target.value}))} />
-        </div>
-
-        <div className="row" style={{ gap: 8, marginTop: 10 }}>
-          <button className="btn btn-primary" onClick={()=>updateProduct(p, local)}>Guardar</button>
-          <button className="btn btn-ghost" onClick={()=>deleteProduct(p)}>Eliminar</button>
-        </div>
+      <div className="container">
+        <Head><title>Vendor — CABURE.STORE</title></Head>
+        <p>Iniciá sesión para continuar.</p>
       </div>
     );
   }
 
-  if (!session?.user) {
+  // Guard de rol
+  if (!myRole && vendorBrands.length === 0) {
     return (
       <div className="container">
-        <Head><title>Vendedor — CABURE.STORE</title></Head>
-        <div className="status-empty">
-          <p>Ingresá para ver tu panel.</p>
-          <button className="btn btn-primary" onClick={() => supabase.auth.signInWithOAuth({ provider: "google" })}>
-            Ingresar con Google
-          </button>
-        </div>
+        <Head><title>Vendor — CABURE.STORE</title></Head>
+        <p>No tenés marcas asignadas. Pedile a un admin que te asigne.</p>
       </div>
     );
   }
 
   return (
-    <div className="container" style={{ paddingBottom: 56 }}>
-      <Head><title>Vendedor — CABURE.STORE</title></Head>
+    <div className="container">
+      <Head><title>Vendor — CABURE.STORE</title></Head>
 
-      {/* Header */}
-      <div className="row" style={{ alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>Vendedor</h1>
-        <div style={{ flex: 1 }} />
-        {brands.length > 0 && (
-          <select
-            className="input"
-            aria-label="Seleccionar marca"
-            value={brandId || ""}
-            onChange={(e) => setBrandId(e.target.value)}
-            style={{ maxWidth: 320 }}
-          >
-            {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        )}
-        {activeBrand?.slug && (
-          <Link href={`/marcas/${encodeURIComponent(activeBrand.slug)}`} className="btn btn-ghost" style={{ marginLeft: 8 }}>
-            Ver marca
-          </Link>
-        )}
+      <div className="row" style={{ alignItems:"center", gap:12 }}>
+        <h1 style={{ margin:0 }}>Vendedor</h1>
+        <div style={{ flex:1 }} />
+        <select
+          value={brandId || ""}
+          onChange={(e) => setBrandId(e.target.value)}
+          aria-label="Seleccionar marca"
+          className="select"
+        >
+          {(vendorBrands || []).map(b => (
+            <option key={b.id} value={b.id}>{b.name}</option>
+          ))}
+        </select>
       </div>
 
-      {!activeBrand ? (
-        <div className="card" style={{ marginTop: 12, padding: 16, border: "1px dashed var(--border)" }}>
-          No tenés marcas asignadas todavía.
-        </div>
-      ) : (
-        <>
-          {/* Tabs */}
-          <div className="row" role="tablist" aria-label="Secciones del panel" style={{ gap: 8, marginTop: 12 }}>
-            {TABS.map(t => (
-              <button
-                key={t}
-                role="tab"
-                aria-selected={tab === t}
-                className={`chip ${tab === t ? "chip--active" : ""}`}
-                onClick={() => setTab(t)}
-              >
-                {t}
-              </button>
+      <div className="tabs">
+        <button className={`tab ${tab === "catalog" ? "active" : ""}`} onClick={() => setTab("catalog")}>Catálogo</button>
+        <button className={`tab ${tab === "orders" ? "active" : ""}`} onClick={() => setTab("orders")}>Pedidos</button>
+        <button className={`tab ${tab === "chats" ? "active" : ""}`} onClick={() => setTab("chats")}>Chats</button>
+      </div>
+
+      {/* ===================== CATALOGO ===================== */}
+      {tab === "catalog" && (
+        <section className="card">
+          <div className="row" style={{ alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>Catálogo</h2>
+            <div style={{ flex: 1 }} />
+            <button className="btn" onClick={() => setAddingOpen(v => !v)}>{addingOpen ? "Cerrar" : "Nuevo producto"}</button>
+          </div>
+
+          {addingOpen && (
+            <form className="grid form" onSubmit={(e) => createOrUpdateProduct(e, null)}>
+              <input name="name" placeholder="Nombre" required />
+              <input name="price" type="number" placeholder="Precio" min="0" step="1" required />
+              <input name="stock" type="number" placeholder="Stock (predet. 1)" min="0" defaultValue="1" />
+              <input name="category" placeholder="Categoría (opcional)" />
+              <input name="subcategory" placeholder="Subcategoría (opcional)" />
+              <label className="chk">
+                <input type="checkbox" name="active" defaultChecked /> Activo
+              </label>
+              <div className="file">
+                <label>Imágenes (hasta 5)</label>
+                <input name="images" type="file" accept="image/*" multiple />
+              </div>
+              <div className="row" style={{ gap:8 }}>
+                <button className="btn primary" type="submit" disabled={savingId === "new"}>{savingId === "new" ? "Guardando…" : "Guardar producto"}</button>
+                <button className="btn ghost" type="button" onClick={() => setAddingOpen(false)}>Cancelar</button>
+              </div>
+            </form>
+          )}
+
+          {loadingProducts && <div className="skeleton" style={{ height: 60, marginTop: 12 }} />}
+
+          <div className="grid products">
+            {products.map((p) => (
+              <ProductCard
+                key={p.id}
+                p={p}
+                onSave={(e) => createOrUpdateProduct(e, p)}
+                onDelete={() => softDeleteProduct(p)}
+              />
             ))}
           </div>
 
-          {/* CHATS */}
-          {tab === "Chats" && (
-            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "320px 1fr", gap: 16, alignItems: "start" }}>
-              <section className="card" style={{ padding: 12 }}>
-                <h2 style={{ marginTop: 0 }}>Chats</h2>
-                {loadingThreads ? (
-                  <div className="skeleton" style={{ marginTop: 12, height: 64, borderRadius: 10 }} />
-                ) : threads.length === 0 ? (
-                  <div className="card" style={{ marginTop: 12, padding: 12, border: "1px dashed var(--border)", color: "#9aa" }}>
-                    No hay tickets por ahora.
-                  </div>
-                ) : (
-                  <ul style={{ listStyle: "none", padding: 0, margin: "12px 0 0 0", display: "grid", gap: 8 }}>
-                    {threads.map(t => {
-                      const buyerName = buyerMap[t.user_id] || "Cliente";
-                      const active = t.id === activeThreadId;
-                      return (
-                        <li key={t.id}>
-                          <button
-                            className="btn"
-                            onClick={() => setActiveThreadId(t.id)}
-                            aria-label={`Abrir chat con ${buyerName}`}
-                            style={{
-                              width: "100%",
-                              justifyContent: "flex-start",
-                              background: active ? "var(--brand)" : "var(--panel)",
-                              color: active ? "#000" : "var(--text)",
-                              border: "1px solid var(--border)"
-                            }}
-                          >
-                            <div style={{ textAlign: "left" }}>
-                              <div style={{ fontWeight: 600 }}>{buyerName}</div>
-                              <div style={{ fontSize: 12, opacity: 0.8 }}>
-                                {t.status === "open" ? "Abierto" : t.status} · {new Date(t.created_at).toLocaleString("es-AR", { hour12: false })}
-                              </div>
-                            </div>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-
-              <section className="card" style={{ padding: 12, minHeight: 520 }}>
-                {!activeThreadId ? (
-                  <div className="status-empty">Seleccioná un chat para comenzar.</div>
-                ) : (
-                  <ChatBox threadId={activeThreadId} />
-                )}
-              </section>
-            </div>
+          {(!loadingProducts && products.length === 0) && (
+            <div className="empty">No tenés productos aún. Creá el primero 👆</div>
           )}
-
-          {/* CATALOGO */}
-          {tab === "Catálogo" && (
-            <section className="card" style={{ padding: 16, marginTop: 12 }}>
-              <div className="row" style={{ alignItems: "center" }}>
-                <h2 style={{ margin: 0 }}>Catálogo</h2>
-                <div style={{ flex: 1 }} />
-                <button className="btn btn-primary" onClick={()=>setCreating(c=>!c)}>
-                  {creating ? "Cerrar" : "Nuevo producto"}
-                </button>
-              </div>
-
-              {/* Crear */}
-              {creating && (
-                <form
-                  onSubmit={async (e)=>{e.preventDefault(); await createProduct(e.currentTarget);}}
-                  className="card"
-                  style={{ padding: 12, marginTop: 12, border: "1px dashed var(--border)" }}
-                >
-                  <div className="row" style={{ gap: 8 }}>
-                    <input className="input" name="name" placeholder="Nombre *" aria-label="Nombre" />
-                    <input className="input" type="number" step="1" min="0" name="price" placeholder="Precio *" aria-label="Precio" style={{ width: 160 }} />
-                    <input className="input" type="number" step="1" min="0" name="stock" defaultValue={1} placeholder="Stock" aria-label="Stock" style={{ width: 120 }} />
-                  </div>
-                  <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                    <input className="input" name="category" placeholder="Categoría (opcional)" />
-                    <input className="input" name="subcategory" placeholder="Subcategoría (opcional)" />
-                  </div>
-                  <div className="row" style={{ gap: 8, marginTop: 8, alignItems: "center" }}>
-                    <input type="file" name="images" accept="image/*" multiple />
-                    <div style={{ fontSize: 12, color: "#9aa" }}>Hasta {MAX_IMAGES} imágenes. Se recomienda formato cuadrado.</div>
-                  </div>
-                  <div className="row" style={{ gap: 8, marginTop: 10 }}>
-                    <button className="btn btn-primary" type="submit" disabled={creating}>Crear</button>
-                    <button className="btn btn-ghost" type="button" onClick={()=>setCreating(false)}>Cancelar</button>
-                  </div>
-                </form>
-              )}
-
-              {/* Lista */}
-              <div style={{
-                marginTop: 12,
-                display: "grid",
-                gap: 12,
-                gridTemplateColumns: "repeat(4, minmax(0, 1fr))"
-              }}>
-                {loadingProducts ? (
-                  <>
-                    <div className="skeleton" style={{ height: 320, borderRadius: 14 }} />
-                    <div className="skeleton" style={{ height: 320, borderRadius: 14 }} />
-                    <div className="skeleton" style={{ height: 320, borderRadius: 14 }} />
-                    <div className="skeleton" style={{ height: 320, borderRadius: 14 }} />
-                  </>
-                ) : products.length === 0 ? (
-                  <div className="card" style={{ padding: 16, border: "1px dashed var(--border)" }}>
-                    No hay productos aún.
-                  </div>
-                ) : (
-                  products.map(p => <ProductCard key={p.id} p={p} />)
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* PEDIDOS (placeholder; tuvíste pedidos antes, podés reusar) */}
-          {tab === "Pedidos" && (
-            <section className="card" style={{ padding: 16, marginTop: 12 }}>
-              <h2 style={{ marginTop: 0 }}>Pedidos</h2>
-              <div style={{ color: "#9aa" }}>
-                Acá va el listado de órdenes de la marca con detalle y acciones. (Si querés, lo armamos ya mismo sobre tu tabla <code>orders</code>.)
-              </div>
-            </section>
-          )}
-        </>
+        </section>
       )}
+
+      {/* ===================== PEDIDOS ===================== */}
+      {tab === "orders" && (
+        <section className="card">
+          <div className="row" style={{ alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>Pedidos</h2>
+            <div style={{ flex: 1 }} />
+            <button className="btn" onClick={exportOrdersCSV}>Exportar CSV</button>
+          </div>
+
+          {loadingOrders && <div className="skeleton" style={{ height: 60, marginTop: 12 }} />}
+
+          <div className="table">
+            <div className="thead">
+              <div>Fecha</div>
+              <div>Pedido</div>
+              <div>Cliente</div>
+              <div>Método</div>
+              <div>Total</div>
+              <div>Estado</div>
+            </div>
+            {(orders || []).map(o => (
+              <div key={o.id} className="trow">
+                <div>{new Date(o.created_at).toLocaleString()}</div>
+                <div>{o.id.slice(0,8)}…</div>
+                <div>{o.buyer_id?.slice(0,8)}…</div>
+                <div>{o.payment_method || "-"}</div>
+                <div>{currency(o.total)}</div>
+                <div>{o.status}</div>
+              </div>
+            ))}
+            {!loadingOrders && orders.length === 0 && (
+              <div className="empty">Sin pedidos todavía.</div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ===================== CHATS ===================== */}
+      {tab === "chats" && (
+        <section className="card">
+          <div className="row" style={{ alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>Chats con clientes</h2>
+            <div style={{ flex: 1 }} />
+            <button className="btn" onClick={() => loadThreads()}>Actualizar</button>
+          </div>
+
+          {loadingThreads && <div className="skeleton" style={{ height: 60, marginTop: 12 }} />}
+
+          <div className="grid2">
+            <div className="threads">
+              {(threads || []).map(t => (
+                <button
+                  key={t.id}
+                  className={`thread ${activeThread === t.id ? "active" : ""}`}
+                  onClick={() => setActiveThread(t.id)}
+                >
+                  <div className="title">{profilesMap[t.user_id] || t.user_id.slice(0,8)}</div>
+                  <div className="meta">{t.status} · {new Date(t.created_at).toLocaleString()}</div>
+                </button>
+              ))}
+              {!loadingThreads && threads.length === 0 && (
+                <div className="empty">Sin hilos por ahora.</div>
+              )}
+            </div>
+            <div className="box">
+              {activeThread ? (
+                <VendorChatBox threadId={activeThread} senderRole="vendor" />
+              ) : (
+                <div className="empty">Seleccioná un hilo a la izquierda</div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      <style jsx>{`
+        .container { padding: 16px; }
+        .row { display:flex; gap:10px; }
+        .select { background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:8px 10px; }
+        .tabs { display:flex; gap:8px; margin:12px 0; }
+        .tab { background:#0f0f0f; color:#ddd; border:1px solid #2a2a2a; border-radius:12px; padding:8px 12px; cursor:pointer; }
+        .tab.active { background:#171717; border-color:#3a3a3a; color:#fff; }
+
+        .card { background:#0c0c0c; border:1px solid #1f1f1f; border-radius:16px; padding:12px; margin-top:10px; }
+        .grid.form { display:grid; gap:10px; grid-template-columns: repeat(3, minmax(0,1fr)); margin-top:12px; }
+        .grid.form .row { grid-column: 1 / -1; }
+        .grid.products { display:grid; gap:12px; grid-template-columns: repeat(3, minmax(0,1fr)); margin-top:12px; }
+        @media (max-width: 920px){ .grid.products { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+        @media (max-width: 540px){ .grid.products { grid-template-columns: 1fr; } }
+        input, textarea { background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:10px 12px; }
+        .file input { background:transparent; border:none; padding:0; }
+        .chk { display:flex; align-items:center; gap:8px; color:#ddd; }
+
+        .skeleton { background: linear-gradient(90deg, #0f0f0f, #151515, #0f0f0f); border-radius:12px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
+
+        .table { margin-top:12px; }
+        .thead, .trow { display:grid; grid-template-columns: 1.2fr 1fr 1fr 1fr .8fr .8fr; gap:8px; padding:10px; border-bottom:1px solid #1a1a1a; }
+        .thead { font-weight:600; background:#0e0e0e; border-radius:10px; }
+        .empty { padding:12px; border:1px dashed #2a2a2a; border-radius:12px; text-align:center; opacity:.85; margin-top:10px; }
+
+        .grid2 { display:grid; grid-template-columns: 300px 1fr; gap:12px; margin-top:12px; }
+        @media (max-width: 920px){ .grid2 { grid-template-columns: 1fr; } }
+        .threads { background:#0a0a0a; border:1px solid #1a1a1a; border-radius:12px; padding:8px; display:grid; gap:6px; }
+        .thread { text-align:left; background:#0f0f0f; border:1px solid #222; color:#ddd; border-radius:10px; padding:10px; cursor:pointer; }
+        .thread.active { background:#171717; border-color:#3a3a3a; color:#fff; }
+        .thread .title { font-weight:600; }
+        .thread .meta { font-size:.85rem; opacity:.8; }
+        .box { min-height: 50vh; }
+        .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn.primary { background:#1e1e1e; border-color:#3a3a3a; }
+        .btn.ghost { background:transparent; }
+      `}</style>
+    </div>
+  );
+}
+
+function ProductCard({ p, onSave, onDelete }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="pcard">
+      <div className="img">
+        <Image
+          src={p.image_url || "/cabure-logo.png"}
+          alt={p.name}
+          width={600}
+          height={600}
+          style={{ objectFit:"cover", width:"100%", height:"100%", borderRadius:12 }}
+        />
+      </div>
+      <div className="body">
+        <div className="row" style={{ alignItems:"center" }}>
+          <b>{p.name}</b>
+          <div style={{ marginLeft:"auto" }}>{currency(p.price)}</div>
+        </div>
+        <div className="row" style={{ gap:8 }}>
+          <span style={{ opacity:.85 }}>Stock: {Number.isFinite(p.stock) ? p.stock : "-"}</span>
+          <span style={{ opacity:.85 }}>Estado: {p.active ? "Activo" : "Inactivo"}</span>
+        </div>
+        <div className="row" style={{ gap:8 }}>
+          <button className="btn" onClick={() => setOpen(v => !v)}>{open ? "Cerrar" : "Editar"}</button>
+          <button className="btn ghost" onClick={onDelete}>Eliminar</button>
+        </div>
+        {open && (
+          <form className="grid form" onSubmit={onSave}>
+            <input name="name" defaultValue={p.name} placeholder="Nombre" required />
+            <input name="price" type="number" defaultValue={p.price || 0} min="0" step="1" required />
+            <input name="stock" type="number" defaultValue={Number.isFinite(p.stock) ? p.stock : 1} min="0" />
+            <input name="category" defaultValue={p.category || ""} placeholder="Categoría (opcional)" />
+            <input name="subcategory" defaultValue={p.subcategory || ""} placeholder="Subcategoría (opcional)" />
+            <label className="chk">
+              <input type="checkbox" name="active" defaultChecked={!!p.active} /> Activo
+            </label>
+            <div className="file">
+              <label>Nuevas imágenes (hasta 5)</label>
+              <input name="images" type="file" accept="image/*" multiple />
+            </div>
+            <div className="row" style={{ gap:8 }}>
+              <button className="btn primary" type="submit">Guardar</button>
+            </div>
+          </form>
+        )}
+      </div>
+
+      <style jsx>{`
+        .pcard { background:#0c0c0c; border:1px solid #1f1f1f; border-radius:16px; overflow:hidden; }
+        .img { width:100%; aspect-ratio:1/1; background:#0a0a0a; }
+        .body { padding:10px; display:grid; gap:8px; }
+        .grid.form { display:grid; gap:10px; grid-template-columns: repeat(3, minmax(0,1fr)); margin-top:8px; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn.ghost { background:transparent; }
+        input { background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:8px 10px; }
+        .file input { background:transparent; border:none; padding:0; }
+        .chk { display:flex; align-items:center; gap:8px; color:#ddd; }
+      `}</style>
     </div>
   );
 }
