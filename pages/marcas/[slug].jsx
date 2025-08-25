@@ -11,63 +11,30 @@ function currency(n) {
   const v = Number(n || 0);
   return v.toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
 }
-
-/**
- * Convierte una ruta de Storage o URL en URL pública:
- * - Acepta: "http…", "product-images/archivo.jpg", "brand-logos/xxx", o "archivo.jpg" (en ese caso asumimos bucket product-images)
- */
 function toPublicUrl(path) {
   if (!path) return "";
   if (path.startsWith("http")) return path;
   let clean = String(path).replace(/^public\//, "");
-  if (!clean.includes("/")) {
-    // si vino "archivo.jpg" sin bucket, asumimos bucket de productos
-    clean = `product-images/${clean}`;
-  }
+  if (!clean.includes("/")) clean = `product-images/${clean}`;
   return `${SUPABASE_URL}/storage/v1/object/public/${clean}`;
 }
-
-/**
- * Normaliza imágenes de producto. Acepta:
- * - products.images (array o string con comas/espacios)
- * - products.image_url
- * - products.image_url2..image_url5 (soporta hasta 5)
- */
 function collectProductImages(p) {
   const out = [];
-
   if (p?.images) {
-    if (Array.isArray(p.images)) {
-      p.images.forEach(x => x && out.push(x));
-    } else if (typeof p.images === "string") {
-      p.images.split(/[,\s]+/).forEach(x => x && out.push(x.trim()));
-    }
+    if (Array.isArray(p.images)) out.push(...p.images.filter(Boolean));
+    else if (typeof p.images === "string") p.images.split(/[,\s]+/).forEach(x => x && out.push(x.trim()));
   }
-
-  // campos individuales
-  ["image_url", "image_url2", "image_url3", "image_url4", "image_url5"].forEach(k => {
-    if (p?.[k]) out.push(p[k]);
-  });
-
-  // sin duplicados y a URL pública
-  const unique = Array.from(new Set(out.filter(Boolean)));
-  return unique.map(toPublicUrl);
+  ["image_url","image_url2","image_url3","image_url4","image_url5"].forEach(k => { if (p?.[k]) out.push(p[k]); });
+  return Array.from(new Set(out.filter(Boolean))).map(toPublicUrl);
 }
-
 function normalizeBrand(b) {
   if (!b) return null;
   const logoSrc = b.logo_url || b.logo || b.avatar_url || null;
   const instagram = b.instagram_url || b.instagram || null;
   return {
-    id: b.id,
-    name: b.name || "Marca",
-    description: b.description || "",
-    slug: b.slug,
-    logo: logoSrc ? toPublicUrl(logoSrc) : null,
-    instagram,
-    color: b.color || null,
-    bank_alias: b.bank_alias || null,
-    bank_cbu: b.bank_cbu || null,
+    id: b.id, name: b.name || "Marca", description: b.description || "", slug: b.slug,
+    logo: logoSrc ? toPublicUrl(logoSrc) : null, instagram,
+    color: b.color || null, bank_alias: b.bank_alias || null, bank_cbu: b.bank_cbu || null,
     mp_access_token: b.mp_access_token || null,
   };
 }
@@ -77,50 +44,33 @@ function useBrandCart(brandId) {
   const storageKey = brandId ? `cabure_cart_${brandId}` : null;
   const [items, setItems] = useState(() => {
     if (!storageKey) return [];
-    try {
-      const raw = localStorage.getItem(storageKey);
-      return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
+    try { return JSON.parse(localStorage.getItem(storageKey) || "[]"); } catch { return []; }
   });
-
-  useEffect(() => {
-    if (!storageKey) return;
-    try { localStorage.setItem(storageKey, JSON.stringify(items)); } catch {}
-  }, [storageKey, items]);
+  useEffect(() => { if (storageKey) try { localStorage.setItem(storageKey, JSON.stringify(items)); } catch {} }, [storageKey, items]);
 
   const add = useCallback((p, qty = 1) => {
     const max = Math.max(0, Number(p.stock ?? 1)) || 1;
     const images = collectProductImages(p);
     const thumb = images[0] || null;
-
     setItems(prev => {
       const idx = prev.findIndex(it => it.productId === p.id);
       const next = [...prev];
-      if (idx >= 0) {
-        next[idx] = { ...next[idx], qty: Math.min(Number(next[idx].qty || 0) + qty, max) };
-      } else {
-        next.push({ productId: p.id, name: p.name, price: Number(p.price || 0), qty: Math.min(qty, max), image: thumb });
-      }
+      if (idx >= 0) next[idx] = { ...next[idx], qty: Math.min(Number(next[idx].qty || 0) + qty, max) };
+      else next.push({ productId: p.id, name: p.name, price: Number(p.price || 0), qty: Math.min(qty, max), image: thumb });
       return next;
     });
   }, []);
-
-  const remove = useCallback((productId) => {
-    setItems(prev => prev.filter(it => it.productId !== productId));
-  }, []);
-
+  const remove = useCallback((productId) => setItems(prev => prev.filter(it => it.productId !== productId)), []);
   const setQty = useCallback((productId, qty) => {
     const q = Math.max(1, Number(qty || 1));
     setItems(prev => prev.map(it => (it.productId === productId ? { ...it, qty: q } : it)));
   }, []);
-
   const clear = useCallback(() => setItems([]), []);
   const total = useMemo(() => items.reduce((acc, it) => acc + Number(it.price || 0) * Number(it.qty || 0), 0), [items]);
-
   return { items, add, remove, setQty, clear, total };
 }
 
-// ------- modal de checkout (SIN botones de login/logout) -------
+// ------- modal de checkout (sin botones de login/logout) -------
 function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) {
   const [fullName, setFullName] = useState("");
   const [dni, setDni] = useState("");
@@ -157,12 +107,11 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) 
 
     try {
       setSaving(true);
-
       const { data: sdata } = await supabase.auth.getSession();
       const buyer_id = sdata?.session?.user?.id;
       if (!buyer_id) throw new Error("no-session");
 
-      // Crear orden
+      // 1) Crear orden
       const { data: order, error: eo } = await supabase
         .from("orders")
         .insert({
@@ -172,26 +121,36 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) 
           status: "created",
           payment_method: payMethod === "mp" ? "mercadopago" : "transfer",
         })
-        .select("id")
+        .select("id,brand_id")
         .maybeSingle();
       if (eo) throw eo;
 
-      // Items
+      // 2) Items
       const rows = cart.items.map(it => ({
         order_id: order.id, product_id: it.productId, qty: it.qty, unit_price: it.price
       }));
       const { error: ei } = await supabase.from("order_items").insert(rows);
       if (ei) throw ei;
 
-      // Abrir thread de soporte del comprador (lo ve admin y vendedor)
+      // 3) **Descontar stock** por cada item (y desactivar si llega a 0)
+      for (const it of cart.items) {
+        const { data: prod } = await supabase.from("products").select("stock").eq("id", it.productId).maybeSingle();
+        const current = Number(prod?.stock || 0);
+        const newStock = Math.max(current - Number(it.qty || 0), 0);
+        await supabase.from("products")
+          .update({ stock: newStock, active: newStock > 0 })
+          .eq("id", it.productId);
+      }
+
+      // 4) Abrir **thread de la marca** (lo ven Vendedores asignados a esa brand + Admin + comprador)
       const { data: thread, error: et } = await supabase
         .from("support_threads")
-        .insert({ user_id: buyer_id, brand_id: brand.id, status: "open" })
-        .select("id")
+        .insert({ user_id: buyer_id, brand_id: order.brand_id, status: "open" })
+        .select("id,brand_id")
         .maybeSingle();
       if (et) throw et;
 
-      // Mensaje resumen del pedido
+      // 5) Mensaje inicial
       const summary = [
         `Nuevo pedido #${order.id}`,
         `Total: ${currency(cart.total)} | Pago: ${payMethod === "mp" ? "Mercado Pago" : "Transferencia"}`,
@@ -207,7 +166,7 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) 
         thread_id: thread.id, sender_role: "user", message: summary
       });
 
-      onCreated?.(order.id, thread.id); // devolvemos thread para redirigir al chat
+      onCreated?.(order.id, thread.id); // devolvemos el thread para ir al chat
     } catch (e) {
       console.error("checkout error:", e);
       alert("No se pudo crear el pedido. Revisá que estés logueado y probá de nuevo.");
@@ -257,16 +216,6 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) 
             </label>
           </div>
         </div>
-
-        {payMethod==="transfer" && (
-          <div className="card" style={{ marginTop:12, padding:12, border:"1px dashed var(--border)" }}>
-            <div><strong>Alias:</strong> {brand?.bank_alias || "—"}</div>
-            <div><strong>CBU/CVU:</strong> {brand?.bank_cbu || "—"}</div>
-            <div style={{ marginTop:6, color:"#9aa", fontSize:12 }}>
-              Luego de transferir, el vendedor te confirmará por chat.
-            </div>
-          </div>
-        )}
 
         <div className="row" style={{ marginTop:16, alignItems:"center" }}>
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancelar</button>
@@ -345,14 +294,10 @@ export default function BrandPage() {
     (async () => {
       setLoading(true);
       try {
-        const { data: b, error: e1 } = await supabase.from("brands").select("*").eq("slug", slug).maybeSingle();
-        if (e1) throw e1;
+        const { data: b } = await supabase.from("brands").select("*").eq("slug", slug).maybeSingle();
         !cancelled && setBrand(normalizeBrand(b));
-
         if (b?.id) {
-          // Trae TODO y filtramos en cliente por active y stock
-          const { data: ps, error: e2 } = await supabase.from("products").select("*").eq("brand_id", b.id).order("created_at", { ascending: false });
-          if (e2) throw e2;
+          const { data: ps } = await supabase.from("products").select("*").eq("brand_id", b.id).order("created_at", { ascending: false });
           !cancelled && setProductsRaw(Array.isArray(ps) ? ps : []);
         } else {
           !cancelled && setProductsRaw([]);
@@ -371,21 +316,13 @@ export default function BrandPage() {
 
   const products = useMemo(() => {
     let data = (Array.isArray(productsRaw) ? productsRaw : []).filter(p => !!p?.active && Number(p?.stock || 0) > 0);
-    if (activeCat && activeCat !== "Todas") {
-      data = data.filter(p => (p?.category || "").trim() === activeCat);
-    }
+    if (activeCat && activeCat !== "Todas") data = data.filter(p => (p?.category || "").trim() === activeCat);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       data = data.filter(p => p?.name?.toLowerCase().includes(q));
     }
     return data;
   }, [productsRaw, activeCat, search]);
-
-  const categories = useMemo(() => {
-    const s = new Set();
-    (Array.isArray(productsRaw) ? productsRaw : []).forEach(p => { const c = (p?.category || "").trim(); if (c) s.add(c); });
-    return ["Todas", ...Array.from(s)];
-  }, [productsRaw]);
 
   // asegurar login (sin mostrar botones en el carrito)
   const ensureLogged = useCallback(async () => {
@@ -401,6 +338,12 @@ export default function BrandPage() {
     return false;
   }, []);
 
+  const categories = useMemo(() => {
+    const s = new Set();
+    (Array.isArray(productsRaw) ? productsRaw : []).forEach(p => { const c = (p?.category || "").trim(); if (c) s.add(c); });
+    return ["Todas", ...Array.from(s)];
+  }, [productsRaw]);
+
   return (
     <>
       <Head>
@@ -408,16 +351,11 @@ export default function BrandPage() {
       </Head>
 
       <div className="container" style={{ paddingBottom: 56 }}>
-        {/* Header perfil marca + carrito a la derecha */}
+        {/* Header perfil marca + carrito */}
         <section className="card" style={{ display:"grid", gridTemplateColumns:"160px 1fr 360px", gap:16, alignItems:"center", padding:16 }}>
-          {/* Logo */}
           <div style={{ width:160, height:160, borderRadius:16, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", background:"var(--panel)", border:"1px dashed var(--border)" }}>
-            {brand?.logo ? (
-              <img src={brand.logo} alt={brand?.name || "logo"} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
-            ) : <div style={{ color:"#999", fontSize:12 }}>Sin logo</div>}
+            {brand?.logo ? <img src={brand.logo} alt={brand?.name || "logo"} style={{ width:"100%", height:"100%", objectFit:"contain" }}/> : <div style={{ color:"#999", fontSize:12 }}>Sin logo</div>}
           </div>
-
-          {/* Datos */}
           <div>
             <h1 style={{ margin:0 }}>{brand?.name || "Marca"}</h1>
             {brand?.description && <p style={{ margin:"6px 0 12px", color:"#bbb" }}>{brand.description}</p>}
@@ -429,15 +367,12 @@ export default function BrandPage() {
               )}
             </div>
           </div>
-
-          {/* Carrito */}
           <aside className="card" style={{ padding:12 }}>
             <div className="row" style={{ alignItems:"center" }}>
               <h3 style={{ margin:0, fontSize:"1rem" }}>Carrito</h3>
               <div style={{ flex:1 }} />
               <strong>{currency(cart.total)}</strong>
             </div>
-
             {cart.items.length === 0 ? (
               <div style={{ marginTop:8, padding:12, borderRadius:10, background:"var(--panel)", border:"1px dashed var(--border)", color:"#9aa", fontSize:14 }}>
                 Tu carrito está vacío.
@@ -460,7 +395,6 @@ export default function BrandPage() {
                 ))}
               </div>
             )}
-
             <div className="row" style={{ gap:8, marginTop:10, alignItems:"center" }}>
               <button className="btn btn-ghost" onClick={cart.clear} disabled={cart.items.length===0}>Vaciar</button>
               <div style={{ flex:1 }} />
@@ -469,12 +403,10 @@ export default function BrandPage() {
           </aside>
         </section>
 
-        {/* Filtros + búsqueda (sobre el catálogo) */}
+        {/* Filtros + búsqueda */}
         <section className="row" style={{ gap:12, marginTop:16 }}>
           <div className="row" style={{ gap:8, flexWrap:"wrap" }}>
-            {(
-              ["Todas", ...Array.from(new Set(productsRaw.map(p => (p?.category || "").trim()).filter(Boolean)))]
-            ).map(cat => (
+            {categories.map(cat => (
               <button key={cat} className={`chip ${cat===activeCat ? "chip--active":""}`} onClick={()=>setActiveCat(cat)}>{cat}</button>
             ))}
           </div>
@@ -496,17 +428,17 @@ export default function BrandPage() {
         </section>
       </div>
 
-      {/* Modal checkout: al crear redirigimos al chat con el vendedor */}
+      {/* Modal checkout: al crear redirige a chat del pedido */}
       <CheckoutModal
         open={checkoutOpen}
         onClose={()=>setCheckoutOpen(false)}
         brand={brand}
         cart={cart}
         ensureLogged={ensureLogged}
-        onCreated={(orderId, threadId) => {
+        onCreated={(_orderId, threadId) => {
           cart.clear();
           setCheckoutOpen(false);
-          // vamos directo al chat de ese pedido
+          // **chat con vendedores de esa MARCA** (mismo thread; los vendors lo ven por las policies de abajo)
           router.push(`/soporte?thread=${threadId}`);
         }}
       />
