@@ -3,220 +3,210 @@ import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import { supabase } from "@/lib/supabaseClient";
 
-const fmtMoney = (n) => `$ ${Number(n || 0).toLocaleString("es-AR")}`;
-const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("es-AR") : "—");
+function currency(n) {
+  return new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0);
+}
 
 export default function AdminMetrics() {
   const [session, setSession] = useState(null);
-  const [role, setRole] = useState(null);
-  const [orders, setOrders] = useState(null);
-  const [expanded, setExpanded] = useState({}); // order_id => bool
-  const [uiError, setUiError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  // Sesión + rol
+  const [brands, setBrands] = useState([]);
+  const [brandId, setBrandId] = useState("all");
+  const [from, setFrom] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString());
+  const [to, setTo] = useState(() => new Date().toISOString());
+
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [openRow, setOpenRow] = useState(null);
+  const [itemsMap, setItemsMap] = useState({}); // order_id -> items[]
+
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      const s = data?.session ?? null;
-      setSession(s);
-      if (s?.user?.id) {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", s.user.id)
-          .maybeSingle();
-        setRole(prof?.role ?? null);
-      } else setRole(null);
-    })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-      setSession(s);
-      (async () => {
-        if (s?.user?.id) {
-          const { data: prof } = await supabase
-            .from("profiles")
-            .select("role")
-            .eq("user_id", s.user.id)
-            .maybeSingle();
-          setRole(prof?.role ?? null);
-        } else setRole(null);
-      })();
-    });
-    return () => sub?.subscription?.unsubscribe?.();
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
+    return () => sub?.subscription?.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    (async () => {
+      const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", session.user.id).maybeSingle();
+      setIsAdmin(prof?.role === "admin");
+      if (prof?.role !== "admin") return;
+
+      const { data: b } = await supabase.from("brands").select("id,name").is("deleted_at", null).order("name");
+      setBrands(b || []);
+    })();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, brandId, from, to]);
 
   async function loadOrders() {
     setLoading(true);
-    setUiError("");
-    try {
-      const { data, error } = await supabase
-        .from("orders")
-        .select("id, brand_id, buyer_id, total, status, payment_method, mp_preference_id, mp_payment_id, created_at, brands:brand_id(name,slug)")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setOrders(data || []);
-    } catch (e) {
-      setUiError(e.message || "No se pudieron cargar los pedidos.");
-      setOrders([]);
-    } finally {
-      setLoading(false);
-    }
+    let q = supabase.from("orders")
+      .select("id,brand_id,buyer_id,total,status,payment_method,mp_payment_id,created_at")
+      .gte("created_at", from)
+      .lte("created_at", to)
+      .order("created_at", { ascending: false });
+
+    if (brandId !== "all") q = q.eq("brand_id", brandId);
+
+    const { data, error } = await q;
+    setLoading(false);
+    if (error) return;
+    setOrders(data || []);
   }
 
-  useEffect(() => { loadOrders(); }, []);
+  async function loadItems(orderId) {
+    if (itemsMap[orderId]) return; // cached
+    const { data } = await supabase
+      .from("order_items")
+      .select("id,product_id,qty,unit_price,created_at,products(name)")
+      .eq("order_id", orderId);
+    setItemsMap((m) => ({ ...m, [orderId]: data || [] }));
+  }
+
+  async function cancelOrder(orderId) {
+    if (!session?.user?.email) return alert("Sesión inválida");
+    if (!confirm("¿Cancelar/Eliminar este pedido?")) return;
+    const resp = await fetch("/api/admin/order-cancel.js", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId, requesterEmail: session.user.email }),
+    });
+    const json = await resp.json();
+    if (!json.ok) return alert(json.error || "No se pudo cancelar");
+    await loadOrders();
+    alert("Pedido cancelado");
+  }
 
   if (!session) {
     return (
       <div className="container">
-        <Head><title>Métricas — CABURE.STORE</title></Head>
-        <div className="card" style={{ padding: 24 }}>
-          <h2>Métricas</h2>
-          <p>Necesitás iniciar sesión.</p>
-        </div>
+        <Head><title>Admin · Métricas — CABURE.STORE</title></Head>
+        <p>Iniciá sesión.</p>
       </div>
     );
   }
-  if (role !== "admin") {
+  if (!isAdmin) {
     return (
       <div className="container">
-        <Head><title>Métricas — CABURE.STORE</title></Head>
-        <div className="card" style={{ padding: 24 }}>
-          <h2>Sin permiso</h2>
-          <p>Tu usuario no es admin.</p>
-        </div>
+        <Head><title>Admin · Métricas — CABURE.STORE</title></Head>
+        <p>Acceso solo admin.</p>
       </div>
     );
-  }
-
-  async function toggleExpand(orderId) {
-    setExpanded((prev) => ({ ...prev, [orderId]: !prev[orderId] }));
-    // Lazy-load de items cuando se expande por primera vez
-    if (!expanded[orderId]) {
-      const { data, error } = await supabase
-        .from("order_items")
-        .select("id, product_id, qty, unit_price, products:product_id(name)")
-        .eq("order_id", orderId)
-        .order("id");
-      if (!error) {
-        setOrders((prev) =>
-          (prev || []).map((o) =>
-            o.id === orderId ? { ...o, _items: data || [] } : o
-          )
-        );
-      }
-    }
-  }
-
-  async function deleteOrder(orderId) {
-    if (!confirm("Esto eliminará el pedido y sus ítems. ¿Continuar?")) return;
-    try {
-      // 1) Borrar ítems primero
-      const delItems = await supabase.from("order_items").delete().eq("order_id", orderId);
-      if (delItems.error) throw delItems.error;
-      // 2) Borrar pedido
-      const delOrder = await supabase.from("orders").delete().eq("id", orderId);
-      if (delOrder.error) throw delOrder.error;
-      // 3) Actualizar UI
-      setOrders((prev) => (prev || []).filter((o) => o.id !== orderId));
-    } catch (e) {
-      alert(e.message || "No se pudo eliminar el pedido (ver políticas RLS).");
-    }
   }
 
   return (
     <div className="container">
-      <Head><title>Métricas — CABURE.STORE</title></Head>
-      <h1>Métricas / Pedidos</h1>
+      <Head><title>Admin · Métricas — CABURE.STORE</title></Head>
 
-      {uiError ? <div className="card" style={{ padding: 12, border: "1px solid #a33" }}>{uiError}</div> : null}
-
-      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-        <button className="btn ghost" onClick={loadOrders} disabled={loading}>{loading ? "Cargando…" : "Refrescar"}</button>
+      <div className="row" style={{ gap:12, alignItems:"center" }}>
+        <h1 style={{ margin:0 }}>Pedidos</h1>
+        <div style={{ flex:1 }} />
+        <select value={brandId} onChange={(e)=>setBrandId(e.target.value)} className="select" aria-label="Marca">
+          <option value="all">Todas</option>
+          {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
+        <input type="datetime-local" value={toLocal(from)} onChange={(e)=>setFrom(fromLocal(e.target.value))} className="select"/>
+        <input type="datetime-local" value={toLocal(to)} onChange={(e)=>setTo(fromLocal(e.target.value))} className="select"/>
+        <button className="btn" onClick={loadOrders}>Actualizar</button>
       </div>
 
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
-        {!orders ? (
-          <div className="skel" style={{ height: 160 }} />
-        ) : orders.length === 0 ? (
-          <div style={{ padding: 16 }}>No hay pedidos.</div>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Pedido</th>
-                <th>Marca</th>
-                <th>Buyer</th>
-                <th>Método</th>
-                <th>Total</th>
-                <th>Estado</th>
-                <th>MP Pref</th>
-                <th>MP Pay</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.map((o) => (
-                <React.Fragment key={o.id}>
-                  <tr>
-                    <td>{fmtDate(o.created_at)}</td>
-                    <td style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                      {o.id.slice(0, 8)}…
-                    </td>
-                    <td>{o.brands?.name || o.brand_id} <span style={{ color: "var(--text-dim)" }}>/{o.brands?.slug || "-"}</span></td>
-                    <td>{o.buyer_id?.slice(0,8)}…</td>
-                    <td>{o.payment_method}</td>
-                    <td>{fmtMoney(o.total)}</td>
-                    <td>{o.status}</td>
-                    <td title={o.mp_preference_id || ""}>{o.mp_preference_id ? o.mp_preference_id.slice(0,6)+"…" : "—"}</td>
-                    <td title={o.mp_payment_id || ""}>{o.mp_payment_id ? o.mp_payment_id.slice(0,6)+"…" : "—"}</td>
-                    <td>
-                      <button className="btn ghost" onClick={() => toggleExpand(o.id)}>
-                        {expanded[o.id] ? "Ocultar" : "Ver ítems"}
-                      </button>
-                      <button className="btn danger" onClick={() => deleteOrder(o.id)} style={{ marginLeft: 6 }}>
-                        Eliminar
-                      </button>
-                    </td>
-                  </tr>
-                  {expanded[o.id] ? (
-                    <tr>
-                      <td colSpan={10} style={{ background: "#0E1012" }}>
-                        {!o._items ? (
-                          <div style={{ padding: 12 }}>Cargando ítems…</div>
-                        ) : o._items.length === 0 ? (
-                          <div style={{ padding: 12 }}>Sin ítems.</div>
-                        ) : (
-                          <table className="table" style={{ margin: 12, width: "calc(100% - 24px)" }}>
-                            <thead>
-                              <tr>
-                                <th>Producto</th>
-                                <th>Cant</th>
-                                <th>Unit</th>
-                                <th>Subtotal</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {o._items.map((it) => (
-                                <tr key={it.id}>
-                                  <td>{it.products?.name || it.product_id}</td>
-                                  <td>{it.qty}</td>
-                                  <td>{fmtMoney(it.unit_price)}</td>
-                                  <td>{fmtMoney(Number(it.unit_price || 0) * Number(it.qty || 0))}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
-                      </td>
-                    </tr>
-                  ) : null}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
+      {loading && <div className="skeleton" style={{ height: 56, marginTop: 12 }} />}
+
+      <div className="table" style={{ marginTop:12 }}>
+        <div className="thead">
+          <div>Fecha</div>
+          <div>Pedido</div>
+          <div>Marca</div>
+          <div>Cliente</div>
+          <div>Método</div>
+          <div>Total</div>
+          <div>Estado</div>
+          <div>Acciones</div>
+        </div>
+
+        {orders.map(o => (
+          <div key={o.id} className="rowset">
+            <div className="trow">
+              <div>{new Date(o.created_at).toLocaleString()}</div>
+              <div>{o.id.slice(0,8)}…</div>
+              <div>{o.brand_id.slice(0,8)}…</div>
+              <div>{o.buyer_id.slice(0,8)}…</div>
+              <div>{o.payment_method || "-"}</div>
+              <div>{currency(o.total)}</div>
+              <div>{o.status}</div>
+              <div className="actions">
+                <button className="btn ghost" onClick={() => { setOpenRow(openRow === o.id ? null : o.id); if (openRow !== o.id) loadItems(o.id); }}>
+                  {openRow === o.id ? "Ocultar" : "Ver ítems"}
+                </button>
+                {o.status !== "canceled" && (
+                  <button className="btn danger" onClick={() => cancelOrder(o.id)}>Cancelar</button>
+                )}
+              </div>
+            </div>
+            {openRow === o.id && (
+              <div className="items">
+                <div className="thead sub">
+                  <div>Producto</div>
+                  <div>Cant.</div>
+                  <div>Unitario</div>
+                  <div>Subtotal</div>
+                </div>
+                {(itemsMap[o.id] || []).map(it => (
+                  <div key={it.id} className="trow sub">
+                    <div>{it.products?.name || it.product_id.slice(0,8)}</div>
+                    <div>{it.qty}</div>
+                    <div>{currency(it.unit_price)}</div>
+                    <div>{currency((it.unit_price || 0) * (it.qty || 0))}</div>
+                  </div>
+                ))}
+                {(itemsMap[o.id]?.length === 0) && <div className="empty">Sin ítems.</div>}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {!loading && orders.length === 0 && (
+          <div className="empty">Sin pedidos en el rango seleccionado.</div>
         )}
       </div>
+
+      <style jsx>{`
+        .container { padding: 16px; }
+        .row { display:flex; }
+        .select { background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:8px 10px; }
+        .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn.ghost { background:transparent; }
+        .btn.danger { background:#2a1212; border-color:#462222; }
+        .skeleton { background: linear-gradient(90deg, #0f0f0f, #151515, #0f0f0f); border-radius:12px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
+
+        .table { width:100%; }
+        .thead, .trow { display:grid; grid-template-columns: 1.2fr .9fr .9fr .9fr .8fr .8fr .7fr 1fr; gap:10px; padding:10px; border-bottom:1px solid #1a1a1a; }
+        .thead { font-weight:600; background:#0e0e0e; border-radius:10px; }
+        .rowset { border:1px solid #1a1a1a; border-radius:12px; margin-top:10px; overflow:hidden; }
+        .items { background:#0b0b0b; padding:8px; }
+        .sub { grid-template-columns: 1.6fr .5fr .6fr .6fr; }
+        .actions { display:flex; gap:8px; }
+        .empty { padding:12px; border:1px dashed #2a2a2a; border-radius:12px; text-align:center; opacity:.85; }
+      `}</style>
     </div>
   );
+}
+
+function toLocal(iso) {
+  // ISO -> input datetime-local (sin zona)
+  const d = new Date(iso);
+  const pad = (n) => `${n}`.padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fromLocal(localStr) {
+  // datetime-local -> ISO
+  return new Date(localStr).toISOString();
 }
