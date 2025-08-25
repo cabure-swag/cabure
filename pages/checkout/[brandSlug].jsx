@@ -1,55 +1,88 @@
-async function confirmarPedido(cartItems, paymentMethod) {
-  try {
-    // 1) usuario logueado
-    const { data: s } = await supabase.auth.getSession();
-    const uid = s?.session?.user?.id;
-    if (!uid) { alert("Tenés que iniciar sesión para confirmar."); return; }
+import { useRouter } from "next/router";
+import { supabase } from "@/lib/supabaseClient";
 
-    // 2) conseguir la brand por el slug de la ruta
-    const { brandSlug } = router.query;
-    const { data: b, error: eB } = await supabase
-      .from("brands")
-      .select("id")
-      .eq("slug", brandSlug)
-      .maybeSingle();
-    if (eB || !b?.id) { alert("Marca no encontrada."); return; }
+export default function Checkout({ cartItems }) {
+  const router = useRouter();
+  const { brandSlug } = router.query;
 
-    // 3) preparar items para la RPC (usa los precios actuales del carrito)
-    const items = (cartItems || []).map(it => ({
-      product_id: it.product_id,
-      qty: it.qty || 1,
-      unit_price: it.unit_price || 0
-    }));
-
-    if (!items.length) { alert("Tu carrito está vacío."); return; }
-
-    // 4) crear pedido + descontar stock
-    const { data: orderId, error: eOrder } = await supabase.rpc(
-      "create_order_with_stock",
-      {
-        p_brand_id: b.id,
-        p_buyer_id: uid,
-        p_items: items,
-        p_payment_method: paymentMethod || "transfer"
+  async function confirmarPedido(paymentMethod) {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const uid = sessionData?.session?.user?.id;
+      if (!uid) {
+        alert("Debes iniciar sesión para continuar.");
+        return;
       }
-    );
-    if (eOrder || !orderId) { alert(eOrder?.message || "No se pudo crear el pedido."); return; }
 
-    // 5) abrir / reutilizar chat con la MARCA (vendedor)
-    const { data: threadId, error: eThread } = await supabase.rpc(
-      "open_brand_thread",
-      { p_brand_id: b.id, p_user_id: uid }
-    );
-    if (eThread || !threadId) {
-      alert("Pedido creado, pero no se pudo abrir el chat.");
-      router.push("/soporte"); // fallback
-      return;
+      // Obtener ID de la marca actual
+      const { data: brand, error: brandError } = await supabase
+        .from("brands")
+        .select("id")
+        .eq("slug", brandSlug)
+        .maybeSingle();
+
+      if (brandError || !brand?.id) {
+        alert("Marca no encontrada.");
+        return;
+      }
+
+      // Preparar items para el pedido
+      const items = (cartItems || []).map(item => ({
+        product_id: item.product_id,
+        qty: item.qty || 1,
+        unit_price: item.unit_price || 0
+      }));
+
+      if (!items.length) {
+        alert("Tu carrito está vacío.");
+        return;
+      }
+
+      // Crear pedido con la nueva función SQL
+      const { data: orderId, error: orderError } = await supabase.rpc(
+        "create_order_with_stock",
+        {
+          p_brand_id: brand.id,
+          p_buyer_id: uid,
+          p_items: items,
+          p_payment_method: paymentMethod || "transfer"
+        }
+      );
+
+      if (orderError || !orderId) {
+        alert(orderError?.message || "No se pudo crear el pedido.");
+        return;
+      }
+
+      // Crear / reutilizar chat con vendedor
+      const { data: threadId, error: chatError } = await supabase.rpc(
+        "open_brand_thread",
+        {
+          p_brand_id: brand.id,
+          p_user_id: uid
+        }
+      );
+
+      if (chatError || !threadId) {
+        alert("Pedido creado, pero no se pudo abrir el chat con el vendedor.");
+        router.push("/");
+        return;
+      }
+
+      alert("Pedido creado con éxito.");
+      router.push(`/vendedor-chat?t=${encodeURIComponent(threadId)}`);
+    } catch (error) {
+      console.error(error);
+      alert("Hubo un error. Intenta de nuevo.");
     }
-
-    // 6) redirigir al chat del cliente con esa marca
-    router.push(`/soporte?t=${encodeURIComponent(threadId)}`);
-  } catch (err) {
-    console.error(err);
-    alert("No se pudo crear el pedido. Probá de nuevo.");
   }
+
+  return (
+    <div>
+      <h1>Finalizar Compra</h1>
+      <button onClick={() => confirmarPedido("transfer")} className="btn btn-primary">
+        Confirmar Pedido
+      </button>
+    </div>
+  );
 }
