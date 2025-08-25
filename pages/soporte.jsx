@@ -22,15 +22,16 @@ export default function Soporte(){
     if (!session) return;
     (async () => {
       if (requestedThread) {
-        // verificamos que el thread pertenezca al usuario
-        const { data: t } = await supabase.from("support_threads")
-          .select("id,user_id,status").eq("id", requestedThread).maybeSingle();
+        const { data: t } = await supabase
+          .from("support_threads")
+          .select("id,user_id,status")
+          .eq("id", requestedThread)
+          .maybeSingle();
         if (t && t.user_id === session.user.id) {
           setThreadId(t.id);
           return;
         }
       }
-      // fallback: abre (o crea) el hilo 'open' del usuario
       const user_id = session.user.id;
       let { data: t } = await supabase
         .from("support_threads")
@@ -52,17 +53,17 @@ export default function Soporte(){
 
   return (
     <div className="container">
-      <Head><title>Soporte — CABURE.STORE</title></Head>
+      <Head><title>Chat con el vendedor — CABURE.STORE</title></Head>
 
       {!session ? (
         <div className="status-empty">
-          <p>Ingresá para abrir el chat de soporte.</p>
+          <p>Ingresá para abrir el chat.</p>
           <button className="btn btn-primary" onClick={login} aria-label="Ingresar con Google">Ingresar con Google</button>
         </div>
       ) : (
         <>
           <div className="row" style={{justifyContent:"space-between", alignItems:"center"}}>
-            <h1>Soporte</h1>
+            <h1>Chat con el vendedor</h1>
           </div>
           {threadId ? (
             <ChatBox threadId={threadId} />
