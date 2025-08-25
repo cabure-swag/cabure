@@ -1,17 +1,56 @@
 // pages/marcas/[slug].jsx
-import { useEffect, useMemo, useState, useCallback } from "react";
 import Head from "next/head";
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import CartSidebar from "@/components/CartSidebar"; // Asegúrate que exista
-// Si tienes un contexto de carrito, impórtalo; si no, el botón "Agregar" puede ser no-op seguro
-// import { useCart } from "@/components/CartContext";
+
+// Panel de carrito simple embebido (para no romper si faltan imports externos)
+function CartPanel() {
+  const [open, setOpen] = useState(true);
+  return (
+    <aside className="card" style={{ padding: 12 }}>
+      <div className="row" style={{ alignItems: "center" }}>
+        <h3 style={{ margin: 0, fontSize: "1rem" }}>Carrito</h3>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-ghost" onClick={() => setOpen((v) => !v)}>
+          {open ? "Ocultar" : "Mostrar"}
+        </button>
+      </div>
+      {open && (
+        <>
+          <div
+            style={{
+              marginTop: 8,
+              padding: 12,
+              borderRadius: 10,
+              background: "var(--panel)",
+              border: "1px dashed var(--border)",
+              color: "#9aa",
+              fontSize: 14,
+            }}
+          >
+            Tu carrito está vacío.
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="btn btn-ghost">Vaciar</button>
+            <button className="btn btn-primary">Continuar</button>
+            <div style={{ flex: 1 }} />
+            <strong>$0</strong>
+          </div>
+        </>
+      )}
+    </aside>
+  );
+}
 
 function currency(n) {
   const v = Number(n || 0);
-  return v.toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
+  return v.toLocaleString("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0,
+  });
 }
 
 export default function BrandPage() {
@@ -20,108 +59,116 @@ export default function BrandPage() {
 
   const [loading, setLoading] = useState(true);
   const [brand, setBrand] = useState(null);
-  const [products, setProducts] = useState([]);
+  const [productsRaw, setProductsRaw] = useState([]);
   const [search, setSearch] = useState("");
   const [activeCat, setActiveCat] = useState("Todas");
 
-  // const { addItem } = useCart?.() ?? { addItem: () => {} };
-
-  // Carga marca + productos (sin filtros SQL) y filtra en cliente
   useEffect(() => {
     if (!slug) return;
+    let cancelled = false;
+
     (async () => {
       setLoading(true);
       try {
-        // 1) Marca
+        // Marca
         const { data: b, error: e1 } = await supabase
           .from("brands")
           .select("id, name, slug, description, instagram_url, logo_url, color")
           .eq("slug", slug)
           .maybeSingle();
         if (e1) throw e1;
-        setBrand(b || null);
 
-        // 2) Productos de la marca, SIN filtrar (para evitar problemas de tipos con stock)
+        if (!cancelled) setBrand(b || null);
+
+        // Productos (sin filtrar en SQL para evitar problemas de tipos)
         if (b?.id) {
           const { data: ps, error: e2 } = await supabase
             .from("products")
-            .select("id, name, price, stock, active, category, subcategory, images, brand_id")
+            .select(
+              "id, name, price, stock, active, category, subcategory, images, brand_id"
+            )
             .eq("brand_id", b.id)
-            .order("id", { ascending: false }); // ajusta si tienes created_at
+            .order("id", { ascending: false });
           if (e2) throw e2;
-
-          // 3) Filtro en cliente: activos + stock numérico > 0
-          const visible = (ps || []).filter(
-            (p) => Boolean(p.active) && Number(p.stock || 0) > 0
-          );
-
-          setProducts(visible);
+          if (!cancelled) setProductsRaw(ps || []);
         } else {
-          setProducts([]);
+          if (!cancelled) setProductsRaw([]);
         }
       } catch (err) {
-        console.error("[brand page] fetch error:", err);
-        setBrand(null);
-        setProducts([]);
+        console.error("[/marcas/[slug]] fetch error:", err);
+        if (!cancelled) {
+          setBrand(null);
+          setProductsRaw([]);
+        }
       } finally {
-        setLoading(false);
+        !cancelled && setLoading(false);
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [slug]);
 
-  // Categorías únicas (solo de los visibles)
-  const categories = useMemo(() => {
-    const set = new Set();
-    (products || []).forEach((p) => {
-      const c = (p.category || "").trim();
-      if (c) set.add(c);
-    });
-    return ["Todas", ...Array.from(set)];
-  }, [products]);
-
-  // Aplicar búsqueda + categoría
-  const filtered = useMemo(() => {
-    let data = products || [];
+  // Filtrado seguro en cliente
+  const products = useMemo(() => {
+    const base = Array.isArray(productsRaw) ? productsRaw : [];
+    let data = base.filter(
+      (p) => Boolean(p?.active) && Number(p?.stock || 0) > 0
+    );
     if (activeCat && activeCat !== "Todas") {
-      data = data.filter((p) => (p.category || "").trim() === activeCat);
+      data = data.filter(
+        (p) => (p?.category || "").trim() === (activeCat || "").trim()
+      );
     }
     if (search?.trim()) {
       const q = search.trim().toLowerCase();
-      data = data.filter((p) => p.name?.toLowerCase().includes(q));
+      data = data.filter((p) => p?.name?.toLowerCase().includes(q));
     }
     return data;
-  }, [products, activeCat, search]);
+  }, [productsRaw, activeCat, search]);
+
+  // Categorías únicas (de los visibles)
+  const categories = useMemo(() => {
+    const s = new Set();
+    (Array.isArray(productsRaw) ? productsRaw : []).forEach((p) => {
+      const c = (p?.category || "").trim();
+      if (c) s.add(c);
+    });
+    return ["Todas", ...Array.from(s)];
+  }, [productsRaw]);
 
   const handleAdd = useCallback((product) => {
-    // Si usas contexto de carrito:
-    // addItem({ productId: product.id, brandId: brand?.id, price: product.price, qty: 1, name: product.name, image: (product.images?.[0] || null) });
-    // Por ahora, simple feedback:
-    console.log("Agregar al carrito:", product.id, product.name);
+    // acá integrás con tu contexto de carrito si lo deseas
+    // por ahora dejamos no-op para no romper
+    console.log("ADD ->", product?.id, product?.name);
   }, []);
 
   return (
     <>
       <Head>
-        <title>{brand?.name ? `${brand.name} — CABURE.STORE` : "CABURE.STORE"}</title>
+        <title>
+          {brand?.name ? `${brand.name} — CABURE.STORE` : "CABURE.STORE"}
+        </title>
       </Head>
 
       <div className="container" style={{ paddingBottom: 48 }}>
-        {/* HEADER DE MARCA */}
+        {/* HEADER (mismo estilo base) */}
         <section
           className="card"
           style={{
             display: "grid",
-            gridTemplateColumns: "140px 1fr 360px",
+            gridTemplateColumns: "160px 1fr 360px",
             gap: 16,
             alignItems: "center",
             padding: 16,
           }}
         >
-          {/* Logo grande, que ocupe el cuadro izquierdo */}
+          {/* Logo grande a la izquierda, usando todo el cuadrado */}
           <div
             style={{
-              width: 140,
-              height: 140,
+              width: 160,
+              height: 160,
               borderRadius: 16,
               overflow: "hidden",
               display: "flex",
@@ -132,7 +179,6 @@ export default function BrandPage() {
             }}
           >
             {brand?.logo_url ? (
-              // Nota: si Next/Image complica por dominios, usa <img>
               <img
                 src={brand.logo_url}
                 alt={brand?.name || "logo"}
@@ -143,16 +189,12 @@ export default function BrandPage() {
             )}
           </div>
 
-          {/* Datos principales */}
+          {/* Centro: título y descripción, Instagram */}
           <div>
             <h1 style={{ margin: 0 }}>{brand?.name || "Marca"}</h1>
-            {brand?.description ? (
-              <p style={{ marginTop: 8, marginBottom: 12, color: "#bbb" }}>
+            {brand?.description && (
+              <p style={{ margin: "6px 0 12px 0", color: "#bbb" }}>
                 {brand.description}
-              </p>
-            ) : (
-              <p style={{ marginTop: 8, marginBottom: 12, color: "#555" }}>
-                {/* placeholder si no hay descripción */}
               </p>
             )}
             <div className="row" style={{ gap: 8 }}>
@@ -164,7 +206,8 @@ export default function BrandPage() {
                   className="btn btn-ghost"
                   aria-label="Instagram"
                 >
-                  <span style={{ marginRight: 6 }}>📸</span> Instagram
+                  <span style={{ marginRight: 6 }}>📸</span>
+                  Instagram
                 </a>
               )}
               {brand?.slug && (
@@ -175,14 +218,12 @@ export default function BrandPage() {
             </div>
           </div>
 
-          {/* Carrito arriba a la derecha */}
-          <div>
-            <CartSidebar brandId={brand?.id} />
-          </div>
+          {/* Derecha: carrito fijo */}
+          <CartPanel />
         </section>
 
-        {/* CONTROLES DEL CATÁLOGO (encima del grid) */}
-        <section className="row" style={{ gap: 12, marginTop: 16, alignItems: "center" }}>
+        {/* CONTROLES encima del catálogo (chips + buscador) */}
+        <section className="row" style={{ gap: 12, marginTop: 16 }}>
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             {categories.map((cat) => (
               <button
@@ -194,9 +235,7 @@ export default function BrandPage() {
               </button>
             ))}
           </div>
-
           <div style={{ flex: 1 }} />
-
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -207,7 +246,7 @@ export default function BrandPage() {
           />
         </section>
 
-        {/* GRID DEL CATÁLOGO */}
+        {/* GRID DEL CATÁLOGO (4 por fila) */}
         <section
           style={{
             marginTop: 16,
@@ -217,12 +256,10 @@ export default function BrandPage() {
           }}
         >
           {loading ? (
-            <>
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="card skeleton" style={{ height: 380 }} />
-              ))}
-            </>
-          ) : filtered.length === 0 ? (
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="card skeleton" style={{ height: 380 }} />
+            ))
+          ) : products.length === 0 ? (
             <div
               className="card"
               style={{
@@ -235,14 +272,13 @@ export default function BrandPage() {
               No hay productos para mostrar.
             </div>
           ) : (
-            filtered.map((p) => (
+            products.map((p) => (
               <ProductCard key={p.id} product={p} onAdd={() => handleAdd(p)} />
             ))
           )}
         </section>
       </div>
 
-      {/* estilos mínimos para chips y grid */}
       <style jsx>{`
         .chip {
           background: var(--panel);
@@ -274,20 +310,19 @@ export default function BrandPage() {
   );
 }
 
-/** Tarjeta de producto cuadrada con carrusel/visor simple */
 function ProductCard({ product, onAdd }) {
-  const imgs = Array.isArray(product.images) ? product.images : [];
+  const imgs = Array.isArray(product?.images) ? product.images : [];
   const [idx, setIdx] = useState(0);
 
-  const prev = useCallback(() => setIdx((i) => (i - 1 + imgs.length) % Math.max(imgs.length, 1)), [imgs.length]);
-  const next = useCallback(() => setIdx((i) => (i + 1) % Math.max(imgs.length, 1)), [imgs.length]);
+  const prev = () => setIdx((i) => (imgs.length ? (i - 1 + imgs.length) % imgs.length : 0));
+  const next = () => setIdx((i) => (imgs.length ? (i + 1) % imgs.length : 0));
 
   return (
     <article className="card" style={{ padding: 12 }}>
       <div
         style={{
           width: "100%",
-          aspectRatio: "1 / 1", // cuadradas
+          aspectRatio: "1 / 1",
           borderRadius: 12,
           overflow: "hidden",
           position: "relative",
@@ -295,11 +330,10 @@ function ProductCard({ product, onAdd }) {
           border: "1px dashed var(--border)",
         }}
       >
-        {imgs.length > 0 ? (
-          // Usa img para evitar dom de Image domains
+        {imgs.length ? (
           <img
             src={imgs[idx]}
-            alt={product.name}
+            alt={product?.name || "producto"}
             style={{ width: "100%", height: "100%", objectFit: "cover" }}
           />
         ) : (
@@ -340,12 +374,13 @@ function ProductCard({ product, onAdd }) {
         )}
       </div>
 
-      <h3 style={{ margin: "8px 0 0 0", fontSize: "1rem" }}>{product.name}</h3>
+      <h3 style={{ margin: "8px 0 0 0", fontSize: "1rem" }}>{product?.name || "Producto"}</h3>
       <div style={{ color: "#9aa", fontSize: 12, marginTop: 2 }}>
-        {product.category || "—"}
+        {(product?.category || "").trim() || "—"}
       </div>
+
       <div className="row" style={{ alignItems: "center", marginTop: 8 }}>
-        <strong>{currency(product.price)}</strong>
+        <strong>{currency(product?.price)}</strong>
         <div style={{ flex: 1 }} />
         <button className="btn btn-primary" onClick={onAdd}>
           Agregar
