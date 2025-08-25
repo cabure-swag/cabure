@@ -4,7 +4,9 @@ import { useRouter } from "next/router";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-// ----------------------------- Utils -----------------------------
+// --------- utils ----------
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+
 function currency(n) {
   const v = Number(n || 0);
   return v.toLocaleString("es-AR", {
@@ -14,29 +16,30 @@ function currency(n) {
   });
 }
 
+function toPublicUrl(path) {
+  if (!path) return "";
+  if (path.startsWith("http")) return path;
+  // acepta product-images/... o brand-logos/... (con o sin "public/")
+  const clean = path.replace(/^public\//, "");
+  return `${SUPABASE_URL}/storage/v1/object/public/${clean}`;
+}
+
 function coerceImages(images) {
-  // Acepta: array JSON | string URL única | string con URLs separadas por coma/espacio
   if (!images) return [];
-  if (Array.isArray(images)) return images.filter(Boolean);
+  if (Array.isArray(images)) return images.filter(Boolean).map(toPublicUrl);
   if (typeof images === "string") {
-    const trimmed = images.trim();
-    if (!trimmed) return [];
-    if (trimmed.includes("http")) {
-      // separa por coma o espacios
-      return trimmed
-        .split(/[,\s]+/)
-        .map((s) => s.trim())
-        .filter((s) => s.startsWith("http"));
-    }
-    return [];
+    const parts = images
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return parts.map(toPublicUrl);
   }
   return [];
 }
 
 function normalizeBrand(b) {
   if (!b) return null;
-  const logo =
-    b.logo_url || b.logo || b.image || b.avatar_url || b.logoUrl || null;
+  const rawLogo = b.logo_url || b.logo || b.image || b.avatar_url || b.logoUrl || null;
   const instagram =
     b.instagram_url || b.instagram || b.ig || b.instagramUrl || null;
   return {
@@ -44,7 +47,7 @@ function normalizeBrand(b) {
     name: b.name || b.title || "Marca",
     description: b.description || b.bio || "",
     slug: b.slug,
-    logo,
+    logo: rawLogo ? toPublicUrl(rawLogo) : null,
     instagram,
     color: b.color || null,
     bank_alias: b.bank_alias || null,
@@ -53,10 +56,9 @@ function normalizeBrand(b) {
   };
 }
 
-// ----------------------------- Carrito por marca (localStorage) -----------------------------
+// --------- carrito por marca (localStorage) ----------
 function useBrandCart(brandId) {
   const key = brandId ? `cabure_cart_${brandId}` : null;
-
   const [items, setItems] = useState(() => {
     if (!key) return [];
     try {
@@ -75,21 +77,25 @@ function useBrandCart(brandId) {
   }, [key, items]);
 
   const add = useCallback((p, qty = 1) => {
+    const max = Number(p.stock || 0) || 1;
+    const images = coerceImages(p.images);
+    const first = images[0] || null;
+
     setItems((prev) => {
       const idx = prev.findIndex((it) => it.productId === p.id);
       const next = [...prev];
       if (idx >= 0) {
         next[idx] = {
           ...next[idx],
-          qty: Math.min((next[idx].qty || 0) + qty, Number(p.stock || 0)),
+          qty: Math.min((next[idx].qty || 0) + qty, max),
         };
       } else {
         next.push({
           productId: p.id,
           name: p.name,
           price: Number(p.price || 0),
-          qty: Math.min(qty, Number(p.stock || 0) || 1),
-          image: coerceImages(p.images)[0] || null,
+          qty: Math.min(qty, max),
+          image: first,
         });
       }
       return next;
@@ -118,8 +124,8 @@ function useBrandCart(brandId) {
   return { items, add, remove, setQty, clear, total };
 }
 
-// ----------------------------- Checkout Modal -----------------------------
-function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
+// --------- checkout modal ----------
+function CheckoutModal({ open, onClose, brand, cart, onCreated, ensureLogged }) {
   const [fullName, setFullName] = useState("");
   const [dni, setDni] = useState("");
   const [email, setEmail] = useState("");
@@ -164,12 +170,22 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
 
   async function confirm() {
     if (!canConfirm || !brand?.id) return;
+    // 1) Asegurar login
+    const ok = await ensureLogged();
+    if (!ok) return;
+
     try {
       setSaving(true);
 
-      // 1) Insert order
+      // Obtener sesión para buyer_id
+      const { data: sdata } = await supabase.auth.getSession();
+      const buyer_id = sdata?.session?.user?.id;
+      if (!buyer_id) throw new Error("No session");
+
+      // 2) Crear order con buyer_id (RLS exige match)
       const payloadOrder = {
         brand_id: brand.id,
+        buyer_id,                          // <- importante
         total: cart.total,
         status: "created",
         payment_method: payMethod === "mp" ? "mercadopago" : "transfer",
@@ -181,24 +197,21 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
         .maybeSingle();
       if (eo) throw eo;
 
-      // 2) Insert order_items
-      const itemsRows = cart.items.map((it) => ({
+      // 3) order_items
+      const rows = cart.items.map((it) => ({
         order_id: order.id,
         product_id: it.productId,
         qty: it.qty,
         unit_price: it.price,
       }));
-      const { error: ei } = await supabase.from("order_items").insert(itemsRows);
+      const { error: ei } = await supabase.from("order_items").insert(rows);
       if (ei) throw ei;
 
-      // 3) Crear hilo de soporte (por marca) + primer mensaje con los datos y pedido
-      const { data: sessionData } = await supabase.auth.getSession();
-      const buyer_id = sessionData?.session?.user?.id || null;
-
+      // 4) hilo de soporte del comprador
       const { data: thread, error: et } = await supabase
         .from("support_threads")
         .insert({
-          user_id: buyer_id, // si no hay sesión, quedará null; RLS podría bloquear; lo intentamos igual
+          user_id: buyer_id,   // policy: dueño del thread
           brand_id: brand.id,
           status: "open",
         })
@@ -206,12 +219,12 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
         .maybeSingle();
       if (et) throw et;
 
-      const summaryLines = [
+      const summary = [
         `Nuevo pedido #${order.id}`,
         `Marca: ${brand.name}`,
         `Total: ${currency(cart.total)}`,
         `Pago: ${payMethod === "mp" ? "Mercado Pago" : "Transferencia"}`,
-        `Envio (Correo Arg.):`,
+        `Envío (Correo Arg.):`,
         `  Nombre: ${fullName}`,
         `  DNI: ${dni}`,
         `  Email: ${email}`,
@@ -219,15 +232,13 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
         `  Dirección: ${address}`,
         `  CP: ${postal} - ${city}, ${province}`,
         `Items:`,
-        ...cart.items.map(
-          (it) => `  - ${it.name} x${it.qty} — ${currency(it.price)}`
-        ),
+        ...cart.items.map((it) => `  - ${it.name} x${it.qty} — ${currency(it.price)}`),
       ].join("\n");
 
       const { error: em } = await supabase.from("support_messages").insert({
         thread_id: thread.id,
         sender_role: "user",
-        message: summaryLines,
+        message: summary,
       });
       if (em) throw em;
 
@@ -310,14 +321,7 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
         </div>
 
         {payMethod === "transfer" && (
-          <div
-            className="card"
-            style={{
-              marginTop: 12,
-              padding: 12,
-              border: "1px dashed var(--border)",
-            }}
-          >
+          <div className="card" style={{ marginTop: 12, padding: 12, border: "1px dashed var(--border)" }}>
             <div><strong>Alias:</strong> {brand?.bank_alias || "—"}</div>
             <div><strong>CBU/CVU:</strong> {brand?.bank_cbu || "—"}</div>
             <div style={{ marginTop: 6, color: "#9aa", fontSize: 12 }}>
@@ -339,39 +343,42 @@ function CheckoutModal({ open, onClose, brand, cart, onCreated }) {
   );
 }
 
-// ----------------------------- Página -----------------------------
+// --------- página ----------
 export default function BrandPage() {
   const router = useRouter();
   const { slug } = router.query;
 
+  const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [brand, setBrand] = useState(null);
   const [productsRaw, setProductsRaw] = useState([]);
 
   const [search, setSearch] = useState("");
   const [activeCat, setActiveCat] = useState("Todas");
-
-  // Checkout modal
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+
+  // Auth listener
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
   // Carga marca + productos
   useEffect(() => {
     if (!slug) return;
     let cancelled = false;
-
     (async () => {
       setLoading(true);
       try {
-        // Marca
         const { data: b, error: e1 } = await supabase
           .from("brands")
           .select("*")
           .eq("slug", slug)
           .maybeSingle();
         if (e1) throw e1;
-        if (!cancelled) setBrand(normalizeBrand(b));
+        !cancelled && setBrand(normalizeBrand(b));
 
-        // Productos (sin filtrar SQL para evitar problemas de tipos)
         if (b?.id) {
           const { data: ps, error: e2 } = await supabase
             .from("products")
@@ -379,36 +386,28 @@ export default function BrandPage() {
             .eq("brand_id", b.id)
             .order("id", { ascending: false });
           if (e2) throw e2;
-          if (!cancelled) setProductsRaw(Array.isArray(ps) ? ps : []);
+          !cancelled && setProductsRaw(Array.isArray(ps) ? ps : []);
         } else {
-          if (!cancelled) setProductsRaw([]);
+          !cancelled && setProductsRaw([]);
         }
       } catch (err) {
         console.error("[/marcas/[slug]] error:", err);
-        if (!cancelled) {
-          setBrand(null);
-          setProductsRaw([]);
-        }
+        !cancelled && (setBrand(null), setProductsRaw([]));
       } finally {
         !cancelled && setLoading(false);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [slug]);
 
   const cart = useBrandCart(brand?.id);
 
-  // Filtro en cliente
+  // Filtro
   const products = useMemo(() => {
     const base = Array.isArray(productsRaw) ? productsRaw : [];
     let data = base.filter((p) => Boolean(p?.active) && Number(p?.stock || 0) > 0);
     if (activeCat && activeCat !== "Todas") {
-      data = data.filter(
-        (p) => (p?.category || "").trim() === (activeCat || "").trim()
-      );
+      data = data.filter((p) => (p?.category || "").trim() === (activeCat || "").trim());
     }
     if (search?.trim()) {
       const q = search.trim().toLowerCase();
@@ -426,19 +425,30 @@ export default function BrandPage() {
     return ["Todas", ...Array.from(s)];
   }, [productsRaw]);
 
-  const handleAdd = useCallback(
-    (p) => {
-      cart.add(p, 1);
-    },
-    [cart]
-  );
+  // login/logout
+  const login = async () => {
+    await supabase.auth.signInWithOAuth({ provider: "google" });
+  };
+  const logout = async () => {
+    await supabase.auth.signOut();
+  };
 
-  function handleOrderCreated(orderId) {
-    cart.clear();
-    setCheckoutOpen(false);
-    alert(`Pedido creado (#${orderId}). Se abrió un chat con el vendedor.`);
-    // Podés redirigir si querés: router.push("/soporte");
-  }
+  // asegurar login en checkout
+  const ensureLogged = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    if (data?.session?.user) return true;
+    await login();
+    // después de volver del OAuth, se re-renderiza y ya habrá sesión
+    const start = Date.now();
+    // espera corta a que la sesión se establezca
+    while (Date.now() - start < 8000) {
+      const { data: d2 } = await supabase.auth.getSession();
+      if (d2?.session?.user) return true;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    alert("No pudimos validar el inicio de sesión.");
+    return false;
+  }, []);
 
   return (
     <>
@@ -447,12 +457,12 @@ export default function BrandPage() {
       </Head>
 
       <div className="container" style={{ paddingBottom: 56 }}>
-        {/* HEADER (logo izq, datos centro, carrito der) */}
+        {/* HEADER: logo izq, datos centro, carrito + auth der */}
         <section
           className="card"
           style={{
             display: "grid",
-            gridTemplateColumns: "160px 1fr 360px",
+            gridTemplateColumns: "160px 1fr 380px",
             gap: 16,
             alignItems: "center",
             padding: 16,
@@ -504,11 +514,10 @@ export default function BrandPage() {
                   Instagram
                 </a>
               )}
-              {/* Se quitó "Perfil público" como pediste */}
             </div>
           </div>
 
-          {/* CARRITO (derecha) */}
+          {/* Carrito + Auth */}
           <aside className="card" style={{ padding: 12 }}>
             <div className="row" style={{ alignItems: "center" }}>
               <h3 style={{ margin: 0, fontSize: "1rem" }}>Carrito</h3>
@@ -600,6 +609,18 @@ export default function BrandPage() {
                 Finalizar compra
               </button>
             </div>
+
+            <div className="row" style={{ gap: 8, marginTop: 10 }}>
+              {!session ? (
+                <button className="btn btn-ghost" onClick={async () => await supabase.auth.signInWithOAuth({ provider: "google" })}>
+                  Iniciar sesión
+                </button>
+              ) : (
+                <button className="btn btn-ghost" onClick={logout}>
+                  Salir ({session.user.email})
+                </button>
+              )}
+            </div>
           </aside>
         </section>
 
@@ -627,7 +648,7 @@ export default function BrandPage() {
           />
         </section>
 
-        {/* GRID DEL CATÁLOGO */}
+        {/* CATÁLOGO */}
         <section
           style={{
             marginTop: 16,
@@ -653,18 +674,31 @@ export default function BrandPage() {
               No hay productos para mostrar.
             </div>
           ) : (
-            products.map((p) => <ProductCard key={p.id} product={p} onAdd={() => handleAdd(p)} />)
+            products.map((p) => <ProductCard key={p.id} product={p} onAdd={() => cart.add(p, 1)} />)
           )}
         </section>
       </div>
 
-      {/* Modal de Checkout */}
+      {/* Modal de checkout */}
       <CheckoutModal
         open={checkoutOpen}
         onClose={() => setCheckoutOpen(false)}
         brand={brand}
         cart={cart}
-        onCreated={handleOrderCreated}
+        onCreated={(orderId) => { cart.clear(); setCheckoutOpen(false); alert(`Pedido #${orderId} creado. Abrimos chat con el vendedor.`); }}
+        ensureLogged={async () => {
+          const { data } = await supabase.auth.getSession();
+          if (data?.session?.user) return true;
+          await supabase.auth.signInWithOAuth({ provider: "google" });
+          // espera breve a que se establezca la sesión
+          const t0 = Date.now();
+          while (Date.now() - t0 < 8000) {
+            const { data: d2 } = await supabase.auth.getSession();
+            if (d2?.session?.user) return true;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          return false;
+        }}
       />
 
       <style jsx>{`
@@ -698,7 +732,7 @@ export default function BrandPage() {
   );
 }
 
-// ----------------------------- Product Card -----------------------------
+// --------- producto ----------
 function ProductCard({ product, onAdd }) {
   const imgs = coerceImages(product?.images);
   const [idx, setIdx] = useState(0);
