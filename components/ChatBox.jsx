@@ -7,9 +7,10 @@ function fmtDate(ts) {
 }
 
 /**
- * ChatBox neutral:
- * - Si el usuario logueado es el comprador del hilo => sus mensajes salen como "Cliente" (o su nombre/email).
- * - Si NO es el comprador (admin/vendor) => sus mensajes salen como "Marca".
+ * Chat neutral (cliente o staff).
+ * - Si el usuario logueado === buyer => sender_role = 'user'
+ * - Caso contrario => sender_role = 'admin' (vendedor/admin)
+ * Staff ve botón "Cerrar hilo".
  */
 export default function ChatBox({ threadId }) {
   const [session, setSession] = useState(null);
@@ -19,15 +20,14 @@ export default function ChatBox({ threadId }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const listRef = useRef(null);
+  const [closing, setClosing] = useState(false);
 
-  // session
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // cargar contexto del hilo
   useEffect(() => {
     if (!threadId) return;
     let cancelled = false;
@@ -45,7 +45,6 @@ export default function ChatBox({ threadId }) {
         if (!cancelled) setBrand(b || null);
       } else { setBrand(null); }
 
-      // perfil comprador
       const { data: p } = await supabase
         .from("profiles")
         .select("user_id,email,full_name,name")
@@ -55,7 +54,6 @@ export default function ChatBox({ threadId }) {
       const buyerEmail = p?.email || null;
       setBuyer({ user_id: t.user_id, name: buyerName, email: buyerEmail });
 
-      // mensajes
       const { data: ms } = await supabase
         .from("support_messages")
         .select("id, sender_role, message, created_at")
@@ -66,27 +64,24 @@ export default function ChatBox({ threadId }) {
     return () => { cancelled = true; };
   }, [threadId]);
 
-  // realtime
   useEffect(() => {
     if (!threadId) return;
     const ch = supabase
       .channel(`support_messages_${threadId}`)
       .on("postgres_changes",
         { event: "*", schema: "public", table: "support_messages", filter: `thread_id=eq.${threadId}` },
-        (payload) => {
-          if (payload.eventType === "INSERT") setMessages(prev => [...prev, payload.new]);
-        }
+        (payload) => { if (payload.eventType === "INSERT") setMessages(prev => [...prev, payload.new]); }
       ).subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [threadId]);
 
-  // autoscroll
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const isBuyer = !!(session?.user?.id && thread?.user_id && session.user.id === thread.user_id);
+  const isClosed = thread?.status === "closed";
 
   function labelFor(msg) {
     if (msg.sender_role === "user") return buyer?.name || buyer?.email || "Cliente";
@@ -96,9 +91,9 @@ export default function ChatBox({ threadId }) {
   async function send(e) {
     e?.preventDefault();
     const body = text.trim();
-    if (!body || !threadId) return;
+    if (!body || !threadId || isClosed) return;
 
-    const sender_role = isBuyer ? "user" : "admin"; // vendors/admin => 'admin'
+    const sender_role = isBuyer ? "user" : "admin";
     const tmp = { id: `tmp_${Date.now()}`, sender_role, message: body, created_at: new Date().toISOString() };
     setMessages(prev => [...prev, tmp]);
     setText("");
@@ -114,12 +109,40 @@ export default function ChatBox({ threadId }) {
     }
   }
 
+  async function closeThread() {
+    if (!threadId || isBuyer || isClosed) return; // solo staff
+    if (!confirm("¿Cerrar este hilo?")) return;
+    setClosing(true);
+    const { error, data } = await supabase
+      .from("support_threads")
+      .update({ status: "closed" })
+      .eq("id", threadId)
+      .select("status")
+      .maybeSingle();
+    setClosing(false);
+    if (error) { alert(error.message || "No se pudo cerrar el hilo."); return; }
+    setThread(t => ({ ...t, status: data?.status || "closed" }));
+  }
+
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="row" style={{ alignItems: "baseline" }}>
-        <h3 style={{ margin: 0 }}>Chat</h3>
+      <div className="row" style={{ alignItems: "center" }}>
+        <div>
+          <h3 style={{ margin: 0 }}>Chat</h3>
+          {!!brand?.name && <div style={{ color: "#9aa", fontSize: 12 }}>{brand.name}</div>}
+        </div>
         <div style={{ flex: 1 }} />
-        {!!brand?.name && <div style={{ color: "#9aa", fontSize: 12 }}>{brand.name}</div>}
+        {!isBuyer && (
+          <button
+            className="btn btn-ghost"
+            onClick={closeThread}
+            disabled={isClosed || closing}
+            aria-label="Cerrar hilo"
+            title="Cerrar hilo"
+          >
+            {isClosed ? "Cerrado" : (closing ? "Cerrando…" : "Cerrar hilo")}
+          </button>
+        )}
       </div>
 
       <div ref={listRef} style={{
@@ -152,8 +175,15 @@ export default function ChatBox({ threadId }) {
       </div>
 
       <form className="row" onSubmit={send} style={{ marginTop: 10, gap: 8 }}>
-        <input className="input" placeholder="Escribí un mensaje…" value={text} onChange={e => setText(e.target.value)} aria-label="Mensaje" />
-        <button className="btn btn-primary" type="submit">Enviar</button>
+        <input
+          className="input"
+          placeholder={isClosed ? "Hilo cerrado" : "Escribí un mensaje…"}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          aria-label="Mensaje"
+          disabled={isClosed}
+        />
+        <button className="btn btn-primary" type="submit" disabled={isClosed}>Enviar</button>
       </form>
     </div>
   );
