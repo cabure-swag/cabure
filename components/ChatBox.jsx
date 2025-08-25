@@ -6,21 +6,15 @@ function fmtDate(ts) {
   try { return new Date(ts).toLocaleString("es-AR", { hour12: false }); } catch { return ts; }
 }
 
-/**
- * Chat neutral (cliente o staff).
- * - Si el usuario logueado === buyer => sender_role = 'user'
- * - Caso contrario => sender_role = 'admin' (vendedor/admin)
- * Staff ve botón "Cerrar hilo".
- */
-export default function ChatBox({ threadId }) {
+export default function ChatBox({ threadId, onDeleted }) {
   const [session, setSession] = useState(null);
-  const [thread, setThread] = useState(null);     // { id, user_id, brand_id, status }
-  const [brand, setBrand] = useState(null);       // { id, name }
-  const [buyer, setBuyer] = useState(null);       // { user_id, email, name }
+  const [thread, setThread] = useState(null);  // { id,user_id,brand_id,status }
+  const [brand, setBrand] = useState(null);    // { id,name }
+  const [buyer, setBuyer] = useState(null);    // { user_id,email,name }
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
   const listRef = useRef(null);
-  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -30,38 +24,37 @@ export default function ChatBox({ threadId }) {
 
   useEffect(() => {
     if (!threadId) return;
-    let cancelled = false;
+    let cancel = false;
     (async () => {
       const { data: t } = await supabase
         .from("support_threads")
         .select("id,user_id,brand_id,status,created_at")
-        .eq("id", threadId)
-        .maybeSingle();
-      if (!t || cancelled) return;
-      setThread(t);
+        .eq("id", threadId).maybeSingle();
+      if (cancel) return;
+      setThread(t || null);
 
-      if (t.brand_id) {
+      if (t?.brand_id) {
         const { data: b } = await supabase.from("brands").select("id,name").eq("id", t.brand_id).maybeSingle();
-        if (!cancelled) setBrand(b || null);
-      } else { setBrand(null); }
+        if (!cancel) setBrand(b || null);
+      } else setBrand(null);
 
-      const { data: p } = await supabase
-        .from("profiles")
-        .select("user_id,email,full_name,name")
-        .eq("user_id", t.user_id)
-        .maybeSingle();
-      const buyerName = p?.full_name || p?.name || null;
-      const buyerEmail = p?.email || null;
-      setBuyer({ user_id: t.user_id, name: buyerName, email: buyerEmail });
+      if (t?.user_id) {
+        const { data: p } = await supabase
+          .from("profiles")
+          .select("user_id,email,full_name,name")
+          .eq("user_id", t.user_id).maybeSingle();
+        const buyerName = p?.full_name || p?.name || null;
+        const buyerEmail = p?.email || null;
+        if (!cancel) setBuyer({ user_id: t.user_id, name: buyerName, email: buyerEmail });
+      }
 
       const { data: ms } = await supabase
         .from("support_messages")
-        .select("id, sender_role, message, created_at")
-        .eq("thread_id", threadId)
-        .order("created_at", { ascending: true });
-      if (!cancelled) setMessages(ms || []);
+        .select("id,sender_role,message,created_at")
+        .eq("thread_id", threadId).order("created_at", { ascending: true });
+      if (!cancel) setMessages(ms || []);
     })();
-    return () => { cancelled = true; };
+    return () => { cancel = true; };
   }, [threadId]);
 
   useEffect(() => {
@@ -69,8 +62,8 @@ export default function ChatBox({ threadId }) {
     const ch = supabase
       .channel(`support_messages_${threadId}`)
       .on("postgres_changes",
-        { event: "*", schema: "public", table: "support_messages", filter: `thread_id=eq.${threadId}` },
-        (payload) => { if (payload.eventType === "INSERT") setMessages(prev => [...prev, payload.new]); }
+        { event: "INSERT", schema: "public", table: "support_messages", filter: `thread_id=eq.${threadId}` },
+        (payload) => setMessages(prev => [...prev, payload.new])
       ).subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [threadId]);
@@ -82,6 +75,7 @@ export default function ChatBox({ threadId }) {
 
   const isBuyer = !!(session?.user?.id && thread?.user_id && session.user.id === thread.user_id);
   const isClosed = thread?.status === "closed";
+  const isStaff = !isBuyer; // vendedor/admin cuando abre desde panel
 
   function labelFor(msg) {
     if (msg.sender_role === "user") return buyer?.name || buyer?.email || "Cliente";
@@ -104,24 +98,35 @@ export default function ChatBox({ threadId }) {
 
     if (error) {
       setMessages(prev => prev.filter(m => m.id !== tmp.id));
-      alert("No se pudo enviar el mensaje.");
+      alert("No se pudo enviar.");
       setText(body);
     }
   }
 
   async function closeThread() {
-    if (!threadId || isBuyer || isClosed) return; // solo staff
+    if (!isStaff || !threadId || isClosed) return;
     if (!confirm("¿Cerrar este hilo?")) return;
-    setClosing(true);
+    setBusy(true);
     const { error, data } = await supabase
       .from("support_threads")
       .update({ status: "closed" })
       .eq("id", threadId)
-      .select("status")
-      .maybeSingle();
-    setClosing(false);
-    if (error) { alert(error.message || "No se pudo cerrar el hilo."); return; }
+      .select("status").maybeSingle();
+    setBusy(false);
+    if (error) { alert(error.message || "No se pudo cerrar."); return; }
     setThread(t => ({ ...t, status: data?.status || "closed" }));
+  }
+
+  async function deleteThread() {
+    if (!isStaff || !threadId) return;
+    if (!confirm("¿Eliminar este hilo y sus mensajes?")) return;
+    setBusy(true);
+    // borramos mensajes primero (más robusto con RLS)
+    await supabase.from("support_messages").delete().eq("thread_id", threadId);
+    const { error } = await supabase.from("support_threads").delete().eq("id", threadId);
+    setBusy(false);
+    if (error) { alert(error.message || "No se pudo eliminar."); return; }
+    onDeleted?.(threadId);
   }
 
   return (
@@ -132,16 +137,13 @@ export default function ChatBox({ threadId }) {
           {!!brand?.name && <div style={{ color: "#9aa", fontSize: 12 }}>{brand.name}</div>}
         </div>
         <div style={{ flex: 1 }} />
-        {!isBuyer && (
-          <button
-            className="btn btn-ghost"
-            onClick={closeThread}
-            disabled={isClosed || closing}
-            aria-label="Cerrar hilo"
-            title="Cerrar hilo"
-          >
-            {isClosed ? "Cerrado" : (closing ? "Cerrando…" : "Cerrar hilo")}
-          </button>
+        {isStaff && (
+          <>
+            <button className="btn btn-ghost" onClick={closeThread} disabled={isClosed || busy}>
+              {isClosed ? "Cerrado" : (busy ? "Cerrando…" : "Cerrar")}
+            </button>
+            <button className="btn btn-ghost" onClick={deleteThread} disabled={busy} title="Eliminar hilo">Eliminar</button>
+          </>
         )}
       </div>
 
