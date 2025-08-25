@@ -1,213 +1,118 @@
 // components/CartSidebar.jsx
 import { useEffect, useMemo, useState } from "react";
-import {
-  readBrandCart,
-  writeBrandCart,
-  clearBrandCart,
-} from "@/utils/brandCart";
 
-export default function CartSidebar({ brandSlug, compact = false }) {
+function money(n) {
+  const v = Number(n || 0);
+  return `$${v.toLocaleString("es-AR")}`;
+}
+
+/**
+ * Carrito por MARCA (se guarda en localStorage con clave cabure:cart:<brandId>)
+ * items: [{ id, name, price, qty, image }]
+ */
+export default function CartSidebar({ brandId }) {
+  const storageKey = useMemo(() => `cabure:cart:${brandId}`, [brandId]);
+  const [open, setOpen] = useState(true);
   const [items, setItems] = useState([]);
 
   useEffect(() => {
-    if (!brandSlug) return;
-    setItems(readBrandCart(brandSlug));
-    const onStorage = (e) => {
-      if (e.key === `cabure:cart:${brandSlug}`) {
-        setItems(readBrandCart(brandSlug));
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [brandSlug]);
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) setItems(JSON.parse(raw));
+    } catch {}
+  }, [storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(items));
+    } catch {}
+  }, [items, storageKey]);
 
   const subtotal = useMemo(
-    () =>
-      items.reduce(
-        (acc, it) => acc + Number(it.price || 0) * Number(it.qty || 1),
-        0
-      ),
+    () => items.reduce((acc, it) => acc + Number(it.price || 0) * Number(it.qty || 0), 0),
     [items]
   );
 
-  const setQty = (id, v) => {
-    const n = Math.max(1, Number(v || 1));
-    const next = items.map((it) => (it.id === id ? { ...it, qty: n } : it));
-    setItems(next);
-    writeBrandCart(brandSlug, next);
-  };
+  function setQty(id, qty) {
+    setItems((prev) =>
+      prev.map((it) => (it.id === id ? { ...it, qty: Math.max(1, qty | 0) } : it))
+    );
+  }
 
-  const remove = (id) => {
-    const next = items.filter((it) => it.id !== id);
-    setItems(next);
-    writeBrandCart(brandSlug, next);
-  };
+  function remove(id) {
+    setItems((prev) => prev.filter((it) => it.id !== id));
+  }
 
-  const clear = () => {
-    clearBrandCart(brandSlug);
+  function clear() {
     setItems([]);
-  };
+  }
 
   return (
-    <aside className={`cart ${compact ? "cart--compact" : ""}`}>
-      <div className="head">
-        <h3>Carrito</h3>
-        <div className="spacer" />
-        <button className="btn sm" onClick={() => {}}>
-          Ocultar
+    <aside className="card" style={{ padding: 16, minWidth: 340 }}>
+      <div className="row" style={{ alignItems: "center" }}>
+        <h3 style={{ margin: 0 }}>Carrito</h3>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-ghost" onClick={() => setOpen((o) => !o)}>
+          {open ? "Ocultar" : "Ver"}
         </button>
       </div>
 
-      <div className="list">
-        {items.length === 0 ? (
-          <div className="empty">Tu carrito está vacío.</div>
-        ) : (
-          items.map((it) => (
-            <div className="row" key={it.id}>
-              <div className="name">{it.name}</div>
-              <input
-                className="qty"
-                type="number"
-                min={1}
-                value={Number(it.qty || 1)}
-                onChange={(e) => setQty(it.id, e.target.value)}
-              />
-              <div className="price">
-                ${Number(it.price || 0) * Number(it.qty || 1)}
-              </div>
-              <button className="x" aria-label="Eliminar" onClick={() => remove(it.id)}>
-                ×
-              </button>
+      {open && (
+        <>
+          <div className="divider" />
+          {items.length === 0 ? (
+            <p style={{ opacity: 0.7 }}>Tu carrito está vacío.</p>
+          ) : (
+            <div style={{ display: "grid", gap: 12 }}>
+              {items.map((it) => (
+                <div key={it.id} className="row" style={{ gap: 12, alignItems: "center" }}>
+                  <img
+                    src={it.image}
+                    alt={it.name}
+                    width={56}
+                    height={56}
+                    style={{ objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                  />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="ellipsis" title={it.name} style={{ fontWeight: 600 }}>
+                      {it.name}
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>{money(it.price)}</div>
+                  </div>
+                  <div style={{ marginLeft: "auto" }} />
+                  <input
+                    type="number"
+                    min={1}
+                    value={it.qty}
+                    onChange={(e) => setQty(it.id, Number(e.target.value || 1))}
+                    style={{ width: 64 }}
+                  />
+                  <button className="btn btn-ghost" onClick={() => remove(it.id)}>
+                    Quitar
+                  </button>
+                </div>
+              ))}
             </div>
-          ))
-        )}
-      </div>
-
-      <div className="foot">
-        <div className="subtotal">
-          <span>Subtotal</span>
-          <strong>${subtotal}</strong>
-        </div>
-        <div className="actions">
-          <button className="btn ghost" onClick={clear} disabled={items.length === 0}>
-            Vaciar
-          </button>
-          <button
-            className="btn"
-            disabled={items.length === 0}
-            onClick={() => (window.location.href = `/checkout/${brandSlug}`)}
-          >
-            Continuar
-          </button>
-        </div>
-      </div>
-
-      <style jsx>{`
-        .cart {
-          background: #0b0d11;
-          border: 1px solid #1f2430;
-          border-radius: 12px;
-          padding: 12px;
-        }
-        .head {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .head h3 {
-          margin: 0;
-          font-size: 16px;
-        }
-        .spacer {
-          flex: 1;
-        }
-        .list {
-          margin: 10px 0;
-          display: grid;
-          gap: 8px;
-          max-height: 300px;
-          overflow: auto;
-        }
-        .row {
-          display: grid;
-          grid-template-columns: 1fr 60px 90px 26px;
-          gap: 6px;
-          align-items: center;
-          border: 1px solid #1f2430;
-          border-radius: 8px;
-          padding: 6px 8px;
-          background: #0f1115;
-        }
-        .name {
-          font-size: 13px;
-        }
-        .qty {
-          width: 100%;
-          height: 30px;
-          background: #0b0d11;
-          color: #e8ecf8;
-          border: 1px solid #1f2430;
-          border-radius: 8px;
-          padding: 0 6px;
-        }
-        .price {
-          text-align: right;
-        }
-        .x {
-          background: transparent;
-          border: none;
-          color: #a8b3cf;
-          cursor: pointer;
-          font-size: 18px;
-        }
-        .empty {
-          color: #a8b3cf;
-          text-align: center;
-          border: 1px dashed #1f2430;
-          border-radius: 8px;
-          padding: 14px;
-        }
-        .foot {
-          border-top: 1px solid #1f2430;
-          padding-top: 10px;
-          display: grid;
-          gap: 10px;
-        }
-        .subtotal {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-        .actions {
-          display: flex;
-          gap: 8px;
-        }
-        .btn {
-          height: 36px;
-          border-radius: 10px;
-          background: #00f0b5;
-          color: #0b0d11;
-          font-weight: 700;
-          border: none;
-          padding: 0 12px;
-          cursor: pointer;
-        }
-        .btn.ghost {
-          background: #0b0d11;
-          color: #e8ecf8;
-          border: 1px solid #1f2430;
-        }
-        .btn.sm {
-          height: 30px;
-          border-radius: 8px;
-          padding: 0 10px;
-        }
-        .btn[disabled] {
-          background: #222b36;
-          color: #7a859b;
-          cursor: not-allowed;
-        }
-      `}</style>
+          )}
+          <div className="divider" />
+          <div className="row" style={{ alignItems: "center" }}>
+            <div style={{ fontWeight: 700 }}>Subtotal</div>
+            <div style={{ flex: 1 }} />
+            <div style={{ fontWeight: 700 }}>{money(subtotal)}</div>
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={clear}>
+              Vaciar
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => alert("Continuar → (próximo paso: envío y método de pago)")}
+            >
+              Continuar
+            </button>
+          </div>
+        </>
+      )}
     </aside>
   );
 }
