@@ -5,6 +5,26 @@ import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import CartSidebar from "@/components/CartSidebar";
 
+/** Convierte lo que venga (URL completa, 'product-images/...', 'brand-logos/...', o solo 'carpeta/archivo.jpg')
+ *  a una URL pública de Supabase Storage.
+ */
+function toPublicURL(input) {
+  if (!input) return null;
+  const v = String(input).trim();
+  if (v.startsWith("http://") || v.startsWith("https://")) return v;
+
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/+$/, "");
+  if (!base) return null;
+
+  const clean = v.replace(/^\/+/, ""); // saca slashes iniciales
+  // Si ya viene con nombre de bucket:
+  if (clean.startsWith("product-images/") || clean.startsWith("brand-logos/")) {
+    return `${base}/storage/v1/object/public/${clean}`;
+  }
+  // Si solo viene path, asumimos bucket de productos:
+  return `${base}/storage/v1/object/public/product-images/${clean}`;
+}
+
 export default function BrandPage() {
   const router = useRouter();
   const { slug } = router.query;
@@ -21,15 +41,25 @@ export default function BrandPage() {
 
   // --- helpers ---
   function normalizeImages(images, image_url) {
+    const out = [];
     try {
-      if (Array.isArray(images)) return images.filter(Boolean);
-      if (typeof images === "string" && images.trim().startsWith("[")) {
-        const arr = JSON.parse(images);
-        return Array.isArray(arr) ? arr.filter(Boolean) : [];
+      if (Array.isArray(images)) {
+        images.forEach((x) => x && out.push(toPublicURL(x)));
+      } else if (typeof images === "string") {
+        const s = images.trim();
+        if (s.startsWith("[")) {
+          const arr = JSON.parse(s);
+          if (Array.isArray(arr)) arr.forEach((x) => x && out.push(toPublicURL(x)));
+        } else {
+          // puede venir una ruta simple
+          out.push(toPublicURL(s));
+        }
       }
     } catch {}
-    return image_url ? [image_url] : [];
+    if (out.length === 0 && image_url) out.push(toPublicURL(image_url));
+    return out.filter(Boolean);
   }
+
   function primaryImage(p) {
     const imgs = normalizeImages(p?.images, p?.image_url);
     return imgs[0] || "/placeholder.png";
@@ -44,15 +74,20 @@ export default function BrandPage() {
       setLoadingBrand(true);
       const { data: b, error } = await supabase
         .from("brands")
-        .select("id,name,slug,description,logo_url,color,instagram_url,bank_alias,bank_cbu,mp_access_token,deleted_at,active")
+        .select("id,name,slug,description,logo_url,color,instagram_url,deleted_at,active")
         .eq("slug", slug)
         .is("deleted_at", null)
         .maybeSingle();
 
       if (!cancelled) {
         setLoadingBrand(false);
-        if (!error && b) setBrand(b);
-        else setBrand(null);
+        if (!error && b) {
+          // Normalizá logo a URL pública por si quedó guardado como path
+          b.logo_url = toPublicURL(b.logo_url);
+          setBrand(b);
+        } else {
+          setBrand(null);
+        }
       }
     })();
 
@@ -76,7 +111,14 @@ export default function BrandPage() {
 
       if (!cancelled) {
         setLoadingProducts(false);
-        if (!error) setProductsRaw(data || []);
+        if (!error) {
+          // Normalizar imágenes a URL pública para cada producto
+          const norm = (data || []).map((p) => {
+            const arr = normalizeImages(p.images, p.image_url);
+            return { ...p, _imagesResolved: arr, _primary: arr[0] || "/placeholder.png" };
+          });
+          setProductsRaw(norm);
+        }
       }
     })();
 
@@ -123,7 +165,6 @@ export default function BrandPage() {
         <div className="left">
           <div className="logoWrap">
             {brand?.logo_url ? (
-              // Usamos <img> para evitar bloqueos por dominios no whitelisted en next/image
               <img src={brand.logo_url} alt={`${brand.name} logo`} className="logoImg" loading="lazy" />
             ) : (
               <div className="noLogo">Sin logo</div>
@@ -210,7 +251,7 @@ export default function BrandPage() {
           <article key={p.id} className="card">
             <div className="imgWrap">
               <img
-                src={primaryImage(p)}
+                src={p._primary || primaryImage(p)}
                 alt={p.name}
                 className="prodImg"
                 loading="lazy"
@@ -308,16 +349,9 @@ function addToCart(brand, product) {
     const cart = raw ? JSON.parse(raw) : { items: [] };
 
     const idx = cart.items.findIndex((it) => it.product_id === product.id);
-    const img = (() => {
-      try {
-        if (Array.isArray(product.images) && product.images[0]) return product.images[0];
-        if (typeof product.images === "string" && product.images.trim().startsWith("[")) {
-          const arr = JSON.parse(product.images);
-          if (Array.isArray(arr) && arr[0]) return arr[0];
-        }
-      } catch {}
-      return product.image_url || null;
-    })();
+
+    // imagen principal ya normalizada si la traemos de productsRaw
+    const img = product._primary || product.image_url || null;
 
     if (idx === -1) {
       cart.items.push({
@@ -334,7 +368,6 @@ function addToCart(brand, product) {
     }
 
     localStorage.setItem(key, JSON.stringify(cart));
-    // Dispará un evento opcional por si el carrito escucha
     try { window.dispatchEvent(new CustomEvent("cabure:cart-changed", { detail: { brandId: brand.id } })); } catch {}
   } catch {}
 }
