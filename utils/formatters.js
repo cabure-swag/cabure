@@ -1,7 +1,91 @@
 // utils/formatters.js
+import { supabase } from "@/lib/supabaseClient";
 
-// Plural simple en español para las categorías más comunes del sitio.
-// Si no está en el mapa, aplicamos una regla básica (termina en vocal -> +s, sino +es).
+// Convierte cualquier forma a URL pública utilizable en <img />
+// Acepta:
+// - "https://..." (devuelve igual)
+// - "/storage/v1/object/public/..." (prefija con NEXT_PUBLIC_SUPABASE_URL)
+// - "product-images/archivo.jpg" -> usa Storage.getPublicUrl()
+// - { url: "..."}  -> url
+// - { path: "..."} -> intenta bucket + path o publicUrl directo
+// - { bucket, path } -> usa Storage.getPublicUrl()
+export function toPublicUrl(input) {
+  if (!input) return null;
+
+  // string directo
+  if (typeof input === "string") {
+    const v = input.trim();
+    if (!v) return null;
+
+    if (v.startsWith("http://") || v.startsWith("https://")) {
+      return v;
+    }
+    if (v.startsWith("/storage/v1/object/public/")) {
+      const base = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/+$/, "") || "";
+      return `${base}${v}`;
+    }
+    // caso "bucket/path/archivo.jpg"
+    const parts = v.split("/");
+    if (parts.length >= 2) {
+      const bucket = parts[0];
+      const path = parts.slice(1).join("/");
+      try {
+        const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+        return data?.publicUrl || null;
+      } catch (_e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // objeto
+  if (typeof input === "object") {
+    if (input.url) return toPublicUrl(input.url);
+    if (input.publicUrl) return toPublicUrl(input.publicUrl);
+    if (input.bucket && input.path) {
+      try {
+        const { data } = supabase.storage.from(input.bucket).getPublicUrl(input.path);
+        return data?.publicUrl || null;
+      } catch (_e) {
+        return null;
+      }
+    }
+    if (input.path) return toPublicUrl(input.path);
+  }
+
+  return null;
+}
+
+// Normaliza imágenes de un producto en un array de URLs públicas.
+export function normalizeImages(product) {
+  const out = [];
+
+  // array en product.images
+  if (Array.isArray(product?.images)) {
+    for (const it of product.images) {
+      const u = toPublicUrl(it);
+      if (u) out.push(u);
+    }
+  }
+
+  // string en product.images
+  if (!out.length && typeof product?.images === "string") {
+    const u = toPublicUrl(product.images);
+    if (u) out.push(u);
+  }
+
+  // fallback: image_url
+  if (!out.length && product?.image_url) {
+    const u = toPublicUrl(product.image_url);
+    if (u) out.push(u);
+  }
+
+  // dedup & limpia
+  return Array.from(new Set(out.filter(Boolean)));
+}
+
+// Plural simple para chips (UI en plural)
 export function pluralizeEs(word = "") {
   const base = String(word || "").trim();
   if (!base) return "";
@@ -26,34 +110,4 @@ export function pluralizeEs(word = "") {
   const last = base.slice(-1).toLowerCase();
   if (["a", "e", "i", "o", "u"].includes(last)) return base + "s";
   return base + "es";
-}
-
-// Normaliza el campo de imágenes de productos para que siempre tengamos un array de strings (URLs públicas).
-// Acepta:
-// - product.images = ["url1","url2",...]
-// - product.images = [{url:"..."}, {url:"..."}]
-// - product.image_url = "..."
-export function normalizeImages(product) {
-  const urls = [];
-
-  if (product?.images) {
-    if (Array.isArray(product.images)) {
-      for (const it of product.images) {
-        if (!it) continue;
-        if (typeof it === "string") urls.push(it);
-        else if (typeof it === "object" && it.url) urls.push(it.url);
-        else if (typeof it === "object" && it.path) {
-          // por si guardaste { path: ".../public/brand-logos/..." }
-          urls.push(it.path);
-        }
-      }
-    } else if (typeof product.images === "string") {
-      urls.push(product.images);
-    }
-  }
-  if ((!urls.length) && product?.image_url) urls.push(product.image_url);
-
-  // quitamos duplicados y vacíos
-  const clean = Array.from(new Set(urls.filter(Boolean)));
-  return clean;
 }
