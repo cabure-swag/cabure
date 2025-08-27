@@ -1,226 +1,466 @@
 // pages/admin/index.jsx
-import React, { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
-// Helpers
-const nowIso = () => new Date().toISOString();
-const slugify = (s) =>
-  (s || "")
+// ============== Utils ==============
+function slugify(s) {
+  return (s || "")
     .toString()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "")
-    .slice(0, 60);
+    .trim();
+}
 
-const ADMIN_EMAIL = (process.env.NEXT_PUBLIC_ADMIN_EMAIL || "").toLowerCase();
+function toPublicURL(input) {
+  if (!input) return null;
+  const v = String(input).trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  if (!base) return null;
+  const clean = v.replace(/^\/+/, "");
+  if (clean.startsWith("brand-logos/")) {
+    return `${base}/storage/v1/object/public/${clean}`;
+  }
+  return `${base}/storage/v1/object/public/brand-logos/${clean}`;
+}
 
-function AdminInner() {
+function useAuthProfile() {
   const [session, setSession] = useState(null);
-  const [role, setRole] = useState(null);
-  const [err, setErr] = useState("");
-
-  const [brands, setBrands] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState(new Set()); // ids de marcas expandidas
-  const [showCreate, setShowCreate] = useState(false);
-
-  // sesión + rol con fallback por email admin
+  const [profile, setProfile] = useState(null);
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        if (!alive) return;
-        const s = data?.session ?? null;
-        setSession(s);
-
-        let effectiveRole = null;
-        if (s?.user?.id) {
-          const { data: prof, error } = await supabase
-            .from("profiles")
-            .select("role,email")
-            .eq("user_id", s.user.id)
-            .maybeSingle();
-          if (error) throw error;
-          effectiveRole = prof?.role ?? null;
-          const userEmail = (s.user.email || "").toLowerCase();
-          if (ADMIN_EMAIL && userEmail === ADMIN_EMAIL) {
-            effectiveRole = "admin";
-          }
-        }
-        setRole(effectiveRole);
-      } catch (e) {
-        setErr(e.message || "No se pudo cargar el perfil.");
-      }
-    })();
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub?.subscription?.unsubscribe?.();
+    return () => sub.subscription?.unsubscribe();
   }, []);
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    supabase.from("profiles").select("user_id,email,role").eq("user_id", session.user.id).maybeSingle()
+      .then(({ data }) => setProfile(data || null));
+  }, [session?.user?.id]);
+  return { session, profile };
+}
 
-  async function loadBrands() {
-    if (role !== "admin") return;
-    setLoading(true);
-    setErr("");
-    try {
+// ============== Uploader ==============
+function Uploader({ accept = "image/*", onPick, children, disabled }) {
+  const ref = useRef(null);
+  return (
+    <>
+      <button className="btn" disabled={disabled} onClick={() => ref.current?.click()}>
+        {children || "Subir"}
+      </button>
+      <input
+        ref={ref}
+        type="file"
+        hidden
+        accept={accept}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (!f) return;
+          onPick?.(f);
+          e.target.value = "";
+        }}
+      />
+      <style jsx>{`
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn:disabled { opacity:.5; cursor:not-allowed; }
+      `}</style>
+    </>
+  );
+}
+
+// ============== Página Admin ==============
+export default function AdminPage() {
+  const { session, profile } = useAuthProfile();
+  const isAdmin = profile?.role === "admin";
+
+  const [brands, setBrands] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [expanded, setExpanded] = useState({}); // id -> bool
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    (async () => {
+      setLoading(true);
       const { data, error } = await supabase
         .from("brands")
-        .select("id,name,slug,description,instagram_url,logo_url,color,active,deleted_at,created_at")
+        .select("id,name,slug,description,logo_url,color,active,bank_alias,bank_cbu,mp_access_token,instagram_url,deleted_at,created_at")
         .order("created_at", { ascending: false });
-      if (error) throw error;
-      setBrands(data || []);
-    } catch (e) {
-      setBrands([]);
-      setErr(e.message || "No se pudieron cargar las marcas.");
-    } finally {
+      if (!error) setBrands(data || []);
       setLoading(false);
-    }
+    })();
+  }, [isAdmin]);
+
+  if (!session) {
+    return (
+      <div className="container">
+        <Head><title>Admin — CABURE.STORE</title></Head>
+        <h1>Admin</h1>
+        <p>Necesitás iniciar sesión.</p>
+        <style jsx>{`.container { padding:16px; }`}</style>
+      </div>
+    );
   }
 
-  useEffect(() => { if (role === "admin") loadBrands(); }, [role]);
-
-  function toggleExpand(id) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  if (!isAdmin) {
+    return (
+      <div className="container">
+        <Head><title>Admin — CABURE.STORE</title></Head>
+        <h1>Admin</h1>
+        <p>No tenés permisos de administrador.</p>
+        <style jsx>{`.container { padding:16px; }`}</style>
+      </div>
+    );
   }
 
   return (
     <div className="container">
-      <Head>
-        <title>Admin — CABURE.STORE</title>
-        <meta name="robots" content="noindex" />
-      </Head>
-      <h1>Admin</h1>
-      {err && <div className="card" style={{ padding: 12, border: "1px solid #a33" }}>{err}</div>}
+      <Head><title>Admin — CABURE.STORE</title></Head>
 
-      {!session && (
-        <div className="card" style={{ padding: 16 }}>
-          <p>Necesitás iniciar sesión.</p>
-          <Link className="btn" href="/soporte">Iniciar sesión</Link>
-        </div>
+      {/* Header */}
+      <div className="row" style={{ alignItems:"center", gap:12, marginBottom:12 }}>
+        <h1 style={{ margin:0 }}>Admin</h1>
+        <div style={{ flex:1 }} />
+        <Link href="/admin/support" className="btn ghost">Soporte</Link>
+        <Link href="/admin/metrics" className="btn ghost">Métricas</Link>
+        <button className="btn" onClick={() => setShowCreate(true)}>Crear marca</button>
+      </div>
+
+      {/* Crear Marca (toggle) */}
+      {showCreate && (
+        <section className="card" style={{ padding:16, marginBottom:12, border:"1px dashed #333" }}>
+          <CreateBrandCard
+            onCancel={() => setShowCreate(false)}
+            onCreated={(newId) => {
+              setShowCreate(false);
+              // refrescar lista
+              supabase
+                .from("brands")
+                .select("id,name,slug,description,logo_url,color,active,bank_alias,bank_cbu,mp_access_token,instagram_url,deleted_at,created_at")
+                .order("created_at", { ascending: false })
+                .then(({ data }) => setBrands(data || []));
+              if (newId) setExpanded((e) => ({ ...e, [newId]: true }));
+            }}
+          />
+        </section>
       )}
 
-      {session && role !== "admin" && (
-        <div className="card" style={{ padding: 16 }}>
-          <p>Tu usuario no es admin.</p>
-          <Link className="btn" href="/">Volver</Link>
-        </div>
-      )}
+      {/* Lista de marcas */}
+      <section className="card" style={{ padding: 8 }}>
+        {loading && <div className="skeleton" style={{ height: 80 }} />}
+        {!loading && brands.length === 0 && <div className="empty">Aún no hay marcas.</div>}
 
-      {session && role === "admin" && (
-        <>
-          <div className="row" style={{ alignItems: "center", gap: 8 }}>
-            <Link href="/admin/metrics" className="btn ghost">Métricas</Link>
-            <Link href="/admin/support" className="btn ghost">Soporte</Link>
-            <div style={{ flex: 1 }} />
-            <button className="btn" onClick={() => setShowCreate(true)}>Nueva marca</button>
-            <button className="btn ghost" onClick={loadBrands} disabled={loading}>
-              {loading ? "Actualizando…" : "Refrescar"}
-            </button>
+        {!loading && brands.length > 0 && (
+          <div className="list">
+            {brands.map((b) => (
+              <BrandRow
+                key={b.id}
+                brand={b}
+                expanded={!!expanded[b.id]}
+                onToggle={() => setExpanded((m) => ({ ...m, [b.id]: !m[b.id] }))}
+                onChangeLocal={(patch) =>
+                  setBrands((prev) => prev.map((x) => (x.id === b.id ? { ...x, ...patch } : x)))
+                }
+                onDeleted={() => setBrands((prev) => prev.filter((x) => x.id !== b.id))}
+              />
+            ))}
           </div>
+        )}
+      </section>
 
-          {/* Crear marca (modal simple inline) */}
-          {showCreate && (
-            <CreateBrandCard
-              onCancel={() => setShowCreate(false)}
-              onCreated={async (newId) => {
-                setShowCreate(false);
-                await loadBrands();
-                if (newId) setExpanded((s) => new Set([...s, newId]));
-              }}
-            />
-          )}
-
-          {/* Lista de marcas como acordeones */}
-          <section className="card" style={{ padding: 0, marginTop: 12 }}>
-            {!brands ? (
-              <div className="skel" style={{ height: 120 }} />
-            ) : brands.length === 0 ? (
-              <div style={{ padding: 16 }}>No hay marcas todavía.</div>
-            ) : (
-              <div>
-                {brands.map((b) => {
-                  const isOpen = expanded.has(b.id);
-                  return (
-                    <div key={b.id} style={{ borderTop: "1px solid var(--border)" }}>
-                      <button
-                        className="row"
-                        onClick={() => toggleExpand(b.id)}
-                        style={{
-                          width: "100%",
-                          textAlign: "left",
-                          padding: 14,
-                          cursor: "pointer",
-                          background: "transparent",
-                          border: "none",
-                          alignItems: "center",
-                          gap: 12,
-                        }}
-                        aria-expanded={isOpen}
-                        aria-controls={`brand-panel-${b.id}`}
-                      >
-                        <span style={{ transform: `rotate(${isOpen ? 90 : 0}deg)`, transition: "transform .2s" }}>▶</span>
-                        <strong>{b.name}</strong>
-                        <span style={{ opacity: 0.7 }}>— /marcas/{b.slug}</span>
-                        {!b.active || b.deleted_at ? (
-                          <span className="badge danger" style={{ marginLeft: 8 }}>
-                            {b.deleted_at ? "Eliminada" : "Inactiva"}
-                          </span>
-                        ) : null}
-                        <div style={{ flex: 1 }} />
-                        <Link href={`/marcas/${b.slug}`} className="btn xsmall ghost" target="_blank" rel="noreferrer">Ver</Link>
-                      </button>
-
-                      {isOpen && (
-                        <div id={`brand-panel-${b.id}`} style={{ padding: 16, background: "var(--panel)" }}>
-                          <BrandEditor
-                            brand={b}
-                            onSaved={loadBrands}
-                            onDeleted={async () => { await loadBrands(); }}
-                            onRestored={async () => { await loadBrands(); }}
-                          />
-                          <BrandVendorsOnly brandId={b.id} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-        </>
-      )}
+      <style jsx>{`
+        .container { padding: 16px; }
+        .row { display:flex; }
+        .card { border:1px solid #1a1a1a; border-radius:14px; background:#0a0a0a; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn.ghost { background:#0f0f0f; }
+        .skeleton { background:linear-gradient(90deg,#0f0f0f,#151515,#0f0f0f); animation:pulse 1.5s infinite; border-radius:10px; }
+        @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
+        .empty { padding:12px; border:1px dashed #2a2a2a; border-radius:12px; text-align:center; opacity:.9; margin:8px; }
+        .list { display:grid; gap:8px; }
+      `}</style>
     </div>
   );
 }
 
+// ============== Fila de marca (acordeón) ==============
+function BrandRow({ brand, expanded, onToggle, onChangeLocal, onDeleted }) {
+  const [saving, setSaving] = useState(false);
+  const [assignEmail, setAssignEmail] = useState("");
+  const [vendors, setVendors] = useState([]);
+  const [loadingVendors, setLoadingVendors] = useState(false);
+
+  // cargar vendors asignados
+  useEffect(() => {
+    if (!expanded) return;
+    (async () => {
+      setLoadingVendors(true);
+      const { data, error } = await supabase
+        .from("brand_users")
+        .select("id,user_id, profiles: user_id (email)")
+        .eq("brand_id", brand.id);
+      setLoadingVendors(false);
+      if (!error) setVendors(data || []);
+    })();
+  }, [expanded, brand.id]);
+
+  async function saveField(patch) {
+    setSaving(true);
+    const { error } = await supabase.from("brands").update(patch).eq("id", brand.id);
+    setSaving(false);
+    if (!error) onChangeLocal?.(patch);
+    else alert(error.message || "No se pudo guardar.");
+  }
+
+  async function uploadLogo(file) {
+    const ext = (file.name.split(".").pop() || "png").toLowerCase();
+    const path = `${brand.id}/${Date.now()}.${ext}`;
+    const { error: upErr } = await supabase.storage.from("brand-logos").upload(path, file, {
+      upsert: true,
+      cacheControl: "3600",
+    });
+    if (upErr) { alert("No se pudo subir el logo."); return; }
+    await saveField({ logo_url: `brand-logos/${path}` });
+  }
+
+  async function softDeleteBrand() {
+    if (!confirm("¿Seguro que querés eliminar (soft delete) esta marca?")) return;
+    const { error } = await supabase.from("brands").update({ deleted_at: new Date().toISOString() }).eq("id", brand.id);
+    if (error) { alert(error.message || "No se pudo eliminar"); return; }
+    onDeleted?.();
+  }
+
+  async function assignVendor() {
+    const email = assignEmail.trim().toLowerCase();
+    if (!email) return alert("Ingresá un email.");
+    // El usuario debe existir en profiles (se crea al loguearse por primera vez)
+    const { data: prof } = await supabase.from("profiles").select("user_id,email").eq("email", email).maybeSingle();
+    if (!prof?.user_id) { alert("Ese email todavía no tiene perfil (debe iniciar sesión al menos una vez)."); return; }
+    const { error } = await supabase
+      .from("brand_users")
+      .insert({ brand_id: brand.id, user_id: prof.user_id });
+    if (error) { alert(error.message || "No se pudo asignar."); return; }
+    setAssignEmail("");
+    // refrescar
+    const { data } = await supabase
+      .from("brand_users")
+      .select("id,user_id, profiles: user_id (email)")
+      .eq("brand_id", brand.id);
+    setVendors(data || []);
+  }
+
+  async function removeVendor(id) {
+    if (!confirm("¿Eliminar vendedor de esta marca?")) return;
+    const { error } = await supabase.from("brand_users").delete().eq("id", id);
+    if (error) { alert(error.message || "No se pudo eliminar"); return; }
+    setVendors((prev) => prev.filter((x) => x.id !== id));
+  }
+
+  return (
+    <div className="rowWrap">
+      <button className="accordion" onClick={onToggle}>
+        <div className="accRow">
+          <div className="logo">
+            {brand.logo_url ? (
+              <img src={toPublicURL(brand.logo_url)} alt={brand.name} />
+            ) : (
+              <div className="placeholder" />
+            )}
+          </div>
+          <div className="meta">
+            <div className="title">{brand.name}</div>
+            <div className="sub">
+              <span className={`badge ${brand.active ? "ok" : ""}`}>{brand.active ? "Activa" : "Inactiva"}</span>
+              {brand.deleted_at && <span className="badge warn">Eliminada</span>}
+              <span className="slug">/{brand.slug}</span>
+            </div>
+          </div>
+          <div style={{ flex:1 }} />
+          <div className="carats">{expanded ? "▾" : "▸"}</div>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="panel">
+          {/* Campos básicos */}
+          <div className="grid">
+            <div className="block">
+              <label>Nombre</label>
+              <input className="inp" defaultValue={brand.name || ""} onBlur={(e) => {
+                const v = e.target.value.trim(); if (v && v !== brand.name) saveField({ name: v });
+              }} />
+            </div>
+            <div className="block">
+              <label>Slug</label>
+              <input className="inp" defaultValue={brand.slug || ""} onBlur={(e) => {
+                const v = slugify(e.target.value); if (v && v !== brand.slug) saveField({ slug: v });
+              }} />
+            </div>
+            <div className="block">
+              <label>Color</label>
+              <input className="inp" type="color" defaultValue={brand.color || "#111827"} onBlur={(e) => {
+                const v = e.target.value || "#111827"; if (v !== brand.color) saveField({ color: v });
+              }} />
+            </div>
+            <div className="block">
+              <label>Activa</label>
+              <input type="checkbox" defaultChecked={!!brand.active} onChange={(e) => {
+                const v = !!e.target.checked; if (v !== brand.active) saveField({ active: v });
+              }} />
+            </div>
+          </div>
+
+          <div className="block">
+            <label>Descripción</label>
+            <textarea className="inp" rows={3} defaultValue={brand.description || ""} onBlur={(e) => {
+              const v = e.target.value.trim() || null; if (v !== (brand.description || null)) saveField({ description: v });
+            }} />
+          </div>
+
+          <div className="grid">
+            <div className="block">
+              <label>Instagram (URL)</label>
+              <input className="inp" placeholder="https://instagram.com/tu_marca" defaultValue={brand.instagram_url || ""} onBlur={(e) => {
+                const v = e.target.value.trim() || null; if (v !== (brand.instagram_url || null)) saveField({ instagram_url: v });
+              }} />
+            </div>
+            <div className="block">
+              <label>Alias (Transferencia)</label>
+              <input className="inp" defaultValue={brand.bank_alias || ""} onBlur={(e) => {
+                const v = e.target.value.trim() || null; if (v !== (brand.bank_alias || null)) saveField({ bank_alias: v });
+              }} />
+            </div>
+            <div className="block">
+              <label>CBU / CVU</label>
+              <input className="inp" defaultValue={brand.bank_cbu || ""} onBlur={(e) => {
+                const v = e.target.value.trim() || null; if (v !== (brand.bank_cbu || null)) saveField({ bank_cbu: v });
+              }} />
+            </div>
+            <div className="block">
+              <label>Mercado Pago Access Token</label>
+              <input className="inp" type="password" placeholder="opcional" defaultValue={brand.mp_access_token || ""} onBlur={(e) => {
+                const v = e.target.value.trim() || null; if (v !== (brand.mp_access_token || null)) saveField({ mp_access_token: v });
+              }} />
+            </div>
+          </div>
+
+          {/* Logo */}
+          <div className="block">
+            <label>Logo</label>
+            <div className="row" style={{ gap:12, alignItems:"center" }}>
+              <div className="logo big">
+                {brand.logo_url ? (
+                  <img src={toPublicURL(brand.logo_url)} alt="logo" />
+                ) : (
+                  <div className="placeholder" />
+                )}
+              </div>
+              <Uploader onPick={uploadLogo}>Subir logo</Uploader>
+            </div>
+          </div>
+
+          {/* Vendors */}
+          <div className="block">
+            <div className="row" style={{ alignItems:"center", gap:8 }}>
+              <h3 style={{ margin:0 }}>Vendedores</h3>
+              {loadingVendors && <span className="hint">cargando…</span>}
+            </div>
+            {vendors.length === 0 && <div className="empty">Sin vendedores asignados.</div>}
+            {vendors.length > 0 && (
+              <ul className="vendors">
+                {vendors.map((v) => (
+                  <li key={v.id}>
+                    <span>{v.profiles?.email || v.user_id}</span>
+                    <button className="btn danger" onClick={() => removeVendor(v.id)}>Quitar</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="row" style={{ gap:8, marginTop:8 }}>
+              <input
+                className="inp"
+                placeholder="email del vendedor…"
+                value={assignEmail}
+                onChange={(e) => setAssignEmail(e.target.value)}
+              />
+              <button className="btn" onClick={assignVendor}>Agregar</button>
+            </div>
+            <p className="hint" style={{ marginTop:6 }}>
+              * El usuario debe haber iniciado sesión al menos una vez para tener perfil.
+            </p>
+          </div>
+
+          {/* Acciones */}
+          <div className="row" style={{ gap:8, marginTop:12 }}>
+            <Link href={`/marcas/${brand.slug}`} className="btn ghost">Ver catálogo público</Link>
+            <button className="btn danger" onClick={softDeleteBrand}>Eliminar (soft)</button>
+            {saving && <span className="hint">Guardando…</span>}
+          </div>
+        </div>
+      )}
+
+      <style jsx>{`
+        .rowWrap { border:1px solid #1a1a1a; border-radius:12px; overflow:hidden; background:#0f0f0f; }
+        .accordion { width:100%; text-align:left; padding:0; background:#0f0f0f; color:#fff; border:0; border-bottom:1px solid #1a1a1a; cursor:pointer; }
+        .accRow { display:flex; align-items:center; gap:12px; padding:10px; }
+        .logo { width:44px; height:44px; border-radius:8px; overflow:hidden; border:1px solid #222; background:#0a0a0a; display:flex; align-items:center; justify-content:center; }
+        .logo img { width:100%; height:100%; object-fit:cover; }
+        .logo.big { width:88px; height:88px; }
+        .placeholder { width:100%; height:100%; background:#0b0b0b; }
+        .meta { display:grid; }
+        .title { font-weight:700; }
+        .sub { display:flex; gap:8px; align-items:center; opacity:.85; }
+        .slug { opacity:.7; }
+        .carats { opacity:.7; font-size:1.2rem; }
+        .panel { padding:12px; display:grid; gap:12px; }
+        .grid { display:grid; gap:12px; grid-template-columns: repeat(2, 1fr); }
+        @media (max-width: 900px){ .grid { grid-template-columns: 1fr; } }
+        .block { display:grid; gap:6px; }
+        .inp {
+          padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff;
+        }
+        .hint { opacity:.7; font-size:.9rem; }
+        .badge { padding:2px 8px; border-radius:999px; border:1px solid #333; font-size:.8rem; }
+        .badge.ok { background:#102012; color:#c6f6d5; border-color:#1f3f26; }
+        .badge.warn { background:#2a1717; color:#f8b4b4; border-color:#422; }
+        .vendors { list-style:none; padding:0; margin:8px 0; display:grid; gap:8px; }
+        .vendors li { display:flex; align-items:center; justify-content:space-between; gap:8px; border:1px solid #222; border-radius:10px; padding:8px 10px; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn.ghost { background:#0f0f0f; }
+        .btn.danger { background:#1c1313; border-color:#3a2222; }
+      `}</style>
+    </div>
+  );
+}
+
+// ============== Crear marca (form colapsable) ==============
 function CreateBrandCard({ onCancel, onCreated }) {
   const [name, setName] = useState("");
-  const [slugRaw, setSlugRaw] = useState("");
+  const [slugState, setSlugState] = useState("");
   const [description, setDescription] = useState("");
   const [instagram, setInstagram] = useState("");
   const [color, setColor] = useState("#111827");
   const [saving, setSaving] = useState(false);
+  const [logoFile, setLogoFile] = useState(null);
 
   function handleName(v) {
     setName(v);
-    if (!slugRaw) setSlugRaw(slugify(v));
+    if (!slugState) setSlugState(slugify(v));
   }
 
   async function createBrand(e) {
     e.preventDefault();
-    const normalized = slugify(slugRaw);
-    const s = normalized || slugify(name);
+    const s = slugify(slugState || name);
     if (!name.trim() || !s) { alert("Nombre y slug son obligatorios."); return; }
     setSaving(true);
     try {
+      // 1) insertar marca
       const payload = {
         name: name.trim(),
         slug: s,
@@ -229,370 +469,85 @@ function CreateBrandCard({ onCancel, onCreated }) {
         color,
         active: true,
       };
-      const { data, error } = await supabase
+      const { data: ins, error: e1 } = await supabase
         .from("brands")
         .insert(payload)
         .select("id")
         .maybeSingle();
-      if (error) throw error;
+      if (e1) throw e1;
+
+      // 2) opcional subir logo
+      if (logoFile && ins?.id) {
+        const ext = (logoFile.name.split(".").pop() || "png").toLowerCase();
+        const path = `${ins.id}/${Date.now()}.${ext}`;
+        const { error: upErr } = await supabase.storage.from("brand-logos").upload(path, logoFile, {
+          upsert: true,
+          cacheControl: "3600",
+        });
+        if (upErr) throw upErr;
+        const { error: updErr } = await supabase
+          .from("brands").update({ logo_url: `brand-logos/${path}` }).eq("id", ins.id);
+        if (updErr) throw updErr;
+      }
+
       alert("Marca creada");
-      onCreated?.(data?.id || null);
-    } catch (e2) {
-      alert(e2.message || "No se pudo crear la marca.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const slugPreview = slugify(slugRaw || "");
-
-  return (
-    <section className="card" style={{ padding: 16, marginTop: 12, border: "1px dashed var(--border)" }}>
-      <div className="row" style={{ alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Nueva marca</h2>
-        <div style={{ flex: 1 }} />
-        <button className="btn ghost" onClick={onCancel}>Cancelar</button>
-      </div>
-
-      <form onSubmit={createBrand} className="grid grid-2" style={{ gap: 12, marginTop: 12 }}>
-        <div>
-          <label className="input-label">Nombre *</label>
-          <input className="input" value={name} onChange={(e) => handleName(e.target.value)} />
-        </div>
-        <div>
-          <label className="input-label">Slug *</label>
-          <input className="input" value={slugRaw} onChange={(e) => setSlugRaw(e.target.value)} />
-          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Quedará como /marcas/{slugPreview || "slug"}</div>
-        </div>
-        <div style={{ gridColumn: "1 / -1" }}>
-          <label className="input-label">Descripción</label>
-          <textarea className="input" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
-        </div>
-        <div>
-          <label className="input-label">Instagram (URL)</label>
-          <input className="input" type="url" value={instagram} onChange={(e) => setInstagram(e.target.value)} placeholder="https://instagram.com/tumarca" />
-        </div>
-        <div>
-          <label className="input-label">Color</label>
-          <input className="input" type="color" value={color} onChange={(e) => setColor(e.target.value)} />
-        </div>
-        <div style={{ gridColumn: "1 / -1", textAlign: "right" }}>
-          <button className="btn" type="submit" disabled={saving}>{saving ? "Creando…" : "Crear marca"}</button>
-        </div>
-      </form>
-    </section>
-  );
-}
-
-function BrandEditor({ brand, onSaved, onDeleted, onRestored }) {
-  const [saving, setSaving] = useState(false);
-  const [name, setName] = useState(brand.name || "");
-  const [slug, setSlug] = useState(brand.slug || "");
-  const [description, setDescription] = useState(brand.description || "");
-  const [instagram, setInstagram] = useState(brand.instagram_url || "");
-  const [active, setActive] = useState(!!brand.active);
-  const [color, setColor] = useState(brand.color || "#111827");
-  const [logoUrl, setLogoUrl] = useState(brand.logo_url || "");
-
-  useEffect(() => {
-    setName(brand.name || "");
-    setSlug(brand.slug || "");
-    setDescription(brand.description || "");
-    setInstagram(brand.instagram_url || "");
-    setActive(!!brand.active);
-    setColor(brand.color || "#111827");
-    setLogoUrl(brand.logo_url || "");
-  }, [brand.id]);
-
-  async function save(fieldPatch) {
-    try {
-      setSaving(true);
-      const patch = fieldPatch ?? {
-        name: name.trim(),
-        slug: slugify(slug),
-        description: description.trim() || null,
-        instagram_url: instagram.trim() || null,
-        active,
-        color,
-        logo_url: logoUrl || null,
-      };
-      const { error } = await supabase.from("brands").update(patch).eq("id", brand.id);
-      if (error) throw error;
-      onSaved?.();
-    } catch (e) {
-      alert(e.message || "No se pudo guardar.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleLogo(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      setSaving(true);
-      const ext = file.name.split(".").pop()?.toLowerCase() || "png";
-      const path = `${brand.id}/${Date.now()}.${ext}`;
-      const up = await supabase.storage.from("brand-logos").upload(path, file, {
-        cacheControl: "3600",
-        upsert: false,
-        contentType: file.type || "image/png",
-      });
-      if (up.error) throw up.error;
-      const { data } = supabase.storage.from("brand-logos").getPublicUrl(path);
-      setLogoUrl(data?.publicUrl || "");
-      await save({ logo_url: data?.publicUrl || null });
-    } catch (e2) {
-      alert(e2.message || "No se pudo subir el logo.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function softDelete() {
-    if (!confirm(`¿Eliminar la marca “${brand.name}”? Es soft delete (se puede restaurar).`)) return;
-    try {
-      const { error } = await supabase
-        .from("brands")
-        .update({ deleted_at: nowIso(), active: false })
-        .eq("id", brand.id);
-      if (error) throw error;
-      alert("Marca eliminada (soft).");
-      onDeleted?.();
-    } catch (e) {
-      alert(e.message || "No se pudo eliminar.");
-    }
-  }
-
-  async function restore() {
-    try {
-      const { error } = await supabase
-        .from("brands")
-        .update({ deleted_at: null, active: true })
-        .eq("id", brand.id);
-      if (error) throw error;
-      alert("Marca restaurada.");
-      onRestored?.();
-    } catch (e) {
-      alert(e.message || "No se pudo restaurar.");
-    }
-  }
-
-  return (
-    <section className="card" style={{ padding: 16, border: "1px solid var(--border)" }}>
-      <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <h3 style={{ margin: 0 }}>Editar marca</h3>
-        <div style={{ flex: 1 }} />
-        <Link href={`/marcas/${brand.slug}`} className="btn ghost" target="_blank" rel="noreferrer">Ver pública</Link>
-        {!brand.deleted_at ? (
-          <button className="btn danger" onClick={softDelete}>Eliminar</button>
-        ) : (
-          <button className="btn" onClick={restore}>Restaurar</button>
-        )}
-      </div>
-
-      <div className="grid grid-2" style={{ gap: 12 }}>
-        <div>
-          <label className="input-label">Nombre</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => save()} />
-
-          <label className="input-label" style={{ marginTop: 8 }}>Slug</label>
-          <input className="input" value={slug} onChange={(e) => setSlug(e.target.value)} onBlur={() => save()} />
-
-          <label className="input-label" style={{ marginTop: 8 }}>Descripción</label>
-          <textarea className="input" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} onBlur={() => save()} />
-
-          <div style={{ marginTop: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <label className="chip">
-              <input
-                type="checkbox"
-                checked={active}
-                onChange={(e) => { setActive(e.target.checked); save({ active: e.target.checked }); }}
-              /> pública
-            </label>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12, opacity: 0.8 }}>Color</span>
-              <input type="color" value={color} onChange={(e) => { setColor(e.target.value); save({ color: e.target.value }); }} />
-            </div>
-          </div>
-
-          <label className="input-label" style={{ marginTop: 8 }}>Instagram (URL)</label>
-          <input
-            className="input"
-            type="url"
-            placeholder="https://instagram.com/tumarca"
-            value={instagram}
-            onChange={(e) => setInstagram(e.target.value)}
-            onBlur={() => save()}
-          />
-        </div>
-
-        <div>
-          <label className="input-label">Logo</label>
-          <input className="input" type="file" accept="image/*" onChange={handleLogo} />
-          <div style={{ width: 180, height: 180, display: "grid", placeItems: "center", background: "#0E1012", border: "1px solid var(--border)", borderRadius: 12, marginTop: 8 }}>
-            {logoUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={logoUrl} alt={name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 10 }} />
-            ) : (
-              <div style={{ opacity: 0.6, fontSize: 12 }}>Sin logo</div>
-            )}
-          </div>
-          {saving ? <div className="badge" style={{ marginTop: 8 }}>Guardando…</div> : null}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/** BrandVendorsOnly
- * - Lista y gestiona SOLO vendedores (role='vendor').
- * - No lista admins, no permite tocarlos.
- * - Agregar por email (el usuario debe haber iniciado sesión al menos una vez).
- * - Quitar vendedor de la marca.
- */
-function BrandVendorsOnly({ brandId }) {
-  const [links, setLinks] = useState(null); // {id,user_id} de brand_users filtrados a vendor
-  const [profilesMap, setProfilesMap] = useState({});
-  const [emailToAdd, setEmailToAdd] = useState("");
-  const [uiError, setUiError] = useState("");
-
-  async function load() {
-    setUiError("");
-    try {
-      const { data: bu, error: e1 } = await supabase
-        .from("brand_users")
-        .select("id, user_id")
-        .eq("brand_id", brandId)
-        .order("id", { ascending: true });
-      if (e1) throw e1;
-
-      const userIds = [...new Set((bu || []).map((x) => x.user_id))];
-      let map = {};
-      if (userIds.length) {
-        const { data: profs, error: e2 } = await supabase
-          .from("profiles")
-          .select("user_id, email, role")
-          .in("user_id", userIds);
-        if (e2) throw e2;
-        for (const p of profs || []) map[p.user_id] = { email: p.email, role: p.role };
-      }
-      setProfilesMap(map);
-
-      // filtrar solo vendors
-      const onlyVendors = (bu || []).filter((l) => map[l.user_id]?.role === "vendor");
-      setLinks(onlyVendors);
-    } catch (e) {
-      setLinks([]);
-      setProfilesMap({});
-      setUiError(e.message || "No se pudo cargar vendedores.");
-    }
-  }
-  useEffect(() => { load(); }, [brandId]);
-
-  async function addVendorByEmail(e) {
-    e.preventDefault();
-    const email = emailToAdd.trim().toLowerCase();
-    if (!email) return;
-    try {
-      const { data: prof, error: e1 } = await supabase
-        .from("profiles")
-        .select("user_id, role, email")
-        .eq("email", email)
-        .maybeSingle();
-      if (e1) throw e1;
-
-      if (!prof?.user_id) {
-        alert("Ese email no tiene perfil aún (debe iniciar sesión al menos una vez).");
-        return;
-      }
-      if (prof.role === "admin") {
-        alert("Ese usuario es admin. No se gestiona desde aquí.");
-        return;
-      }
-      if (prof.role !== "vendor") {
-        const { error: e2 } = await supabase.from("profiles").update({ role: "vendor" }).eq("user_id", prof.user_id);
-        if (e2) throw e2;
-      }
-      const { error: e3 } = await supabase.from("brand_users").insert({ brand_id: brandId, user_id: prof.user_id });
-      if (e3) throw e3;
-
-      setEmailToAdd("");
-      await load();
+      onCreated?.(ins?.id || null);
     } catch (err) {
-      alert(err.message || "No se pudo asignar vendedor.");
-    }
-  }
-
-  async function removeVendor(linkId, userId) {
-    const p = profilesMap[userId];
-    if (p?.role === "admin") {
-      alert("No se puede quitar un admin desde este panel.");
-      return;
-    }
-    if (!confirm("¿Quitar este vendedor de la marca?")) return;
-    try {
-      const { error } = await supabase.from("brand_users").delete().eq("id", linkId);
-      if (error) throw error;
-      await load();
-    } catch (e) {
-      alert(e.message || "No se pudo quitar (verificar RLS/policies).");
+      alert(err.message || "No se pudo crear la marca.");
+    } finally {
+      setSaving(false);
     }
   }
 
   return (
-    <section className="card" style={{ padding: 16, marginTop: 12, border: "1px solid var(--border)" }}>
-      <div className="row" style={{ alignItems: "center" }}>
-        <h3 style={{ margin: 0 }}>Vendedores</h3>
+    <form onSubmit={createBrand}>
+      <h2 style={{ marginTop: 0 }}>Crear marca</h2>
+      <div className="grid">
+        <div className="block">
+          <label>Nombre</label>
+          <input className="inp" value={name} onChange={(e)=>handleName(e.target.value)} />
+        </div>
+        <div className="block">
+          <label>Slug</label>
+          <input className="inp" value={slugState} onChange={(e)=>setSlugState(e.target.value)} />
+        </div>
+        <div className="block">
+          <label>Color</label>
+          <input className="inp" type="color" value={color} onChange={(e)=>setColor(e.target.value)} />
+        </div>
+        <div className="block">
+          <label>Instagram (URL)</label>
+          <input className="inp" placeholder="https://instagram.com/tu_marca" value={instagram} onChange={(e)=>setInstagram(e.target.value)} />
+        </div>
       </div>
 
-      {uiError ? <div className="card" style={{ padding: 12, border: "1px solid #a33", marginTop: 8 }}>{uiError}</div> : null}
-
-      <form onSubmit={addVendorByEmail} className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-        <input
-          className="input"
-          type="email"
-          placeholder="email@ejemplo.com"
-          value={emailToAdd}
-          onChange={(e) => setEmailToAdd(e.target.value)}
-          style={{ minWidth: 260 }}
-        />
-        <button className="btn" type="submit">Agregar vendedor</button>
-      </form>
-
-      <div className="card" style={{ padding: 0, marginTop: 12, overflowX: "auto" }}>
-        {!links ? (
-          <div className="skel" style={{ height: 120 }} />
-        ) : links.length === 0 ? (
-          <div style={{ padding: 16 }}>No hay vendedores asignados todavía.</div>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Usuario</th>
-                <th>Rol</th>
-                <th style={{ width: 140 }}>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {links.map((l) => {
-                const p = profilesMap[l.user_id];
-                return (
-                  <tr key={l.id}>
-                    <td>{p?.email || l.user_id}</td>
-                    <td>{p?.role || "—"}</td>
-                    <td>
-                      <button className="btn danger" onClick={() => removeVendor(l.id, l.user_id)}>Quitar</button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+      <div className="block" style={{ marginTop:8 }}>
+        <label>Descripción</label>
+        <textarea className="inp" rows={3} value={description} onChange={(e)=>setDescription(e.target.value)} />
       </div>
-    </section>
+
+      <div className="block" style={{ marginTop:8 }}>
+        <label>Logo (opcional)</label>
+        <input type="file" accept="image/*" onChange={(e)=>setLogoFile(e.target.files?.[0] || null)} />
+      </div>
+
+      <div className="row" style={{ gap:8, marginTop:12 }}>
+        <button className="btn" type="submit" disabled={saving}>Crear</button>
+        <button className="btn ghost" type="button" onClick={onCancel}>Cancelar</button>
+        {saving && <span className="hint">Guardando…</span>}
+      </div>
+
+      <style jsx>{`
+        .grid { display:grid; gap:12px; grid-template-columns: repeat(2, 1fr); }
+        @media (max-width: 900px){ .grid { grid-template-columns: 1fr; } }
+        .block { display:grid; gap:6px; }
+        .inp {
+          padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff;
+        }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn.ghost { background:#0f0f0f; }
+        .hint { opacity:.7; font-size:.9rem; }
+      `}</style>
+    </form>
   );
 }
-
-export default dynamic(() => Promise.resolve(AdminInner), { ssr: false });
