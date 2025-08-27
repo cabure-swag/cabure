@@ -3,8 +3,14 @@
 // Estructura de cada item: { id, name, price, qty, images?: string[] }
 
 const isBrowser = () => typeof window !== "undefined";
-
 const key = (brandSlug) => `cart:${brandSlug}`;
+
+function broadcast(brandSlug) {
+  if (!isBrowser()) return;
+  try {
+    window.dispatchEvent(new CustomEvent("cart:update", { detail: { brandSlug } }));
+  } catch {}
+}
 
 export function loadCart(brandSlug) {
   if (!isBrowser()) return { items: [] };
@@ -22,12 +28,20 @@ export function loadCart(brandSlug) {
 export function saveCart(brandSlug, items) {
   if (!isBrowser()) return;
   localStorage.setItem(key(brandSlug), JSON.stringify({ items }));
+  broadcast(brandSlug);
 }
 
 export function addToCart(brandSlug, product, qty = 1) {
   const cart = loadCart(brandSlug);
   const idx = cart.items.findIndex((i) => i.id === product.id);
   const safeQty = Math.max(1, qty | 0);
+  const images =
+    product.images && Array.isArray(product.images) && product.images.length
+      ? product.images
+      : product.image_url
+      ? [product.image_url]
+      : [];
+
   if (idx >= 0) {
     cart.items[idx].qty += safeQty;
   } else {
@@ -36,7 +50,7 @@ export function addToCart(brandSlug, product, qty = 1) {
       name: product.name,
       price: Number(product.price || 0),
       qty: safeQty,
-      images: product.images || (product.image_url ? [product.image_url] : []),
+      images,
     });
   }
   saveCart(brandSlug, cart.items);
@@ -67,6 +81,7 @@ export function removeFromCart(brandSlug, productId) {
 export function clearCart(brandSlug) {
   if (!isBrowser()) return;
   localStorage.removeItem(key(brandSlug));
+  broadcast(brandSlug);
 }
 
 export function cartTotal(items) {
