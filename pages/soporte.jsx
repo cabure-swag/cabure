@@ -9,6 +9,10 @@ export default function Soporte() {
   const [threadId, setThreadId] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Estado para primer mensaje (creación diferida)
+  const [firstMsg, setFirstMsg] = useState("");
+  const [creating, setCreating] = useState(false);
+
   // sesión
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -16,49 +20,70 @@ export default function Soporte() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  // crear/abrir hilo del usuario (status=open y sin brand_id específico)
+  // Buscar si ya existe un hilo abierto (NO crear)
   useEffect(() => {
     (async () => {
       if (!session?.user?.id) { setThreadId(null); setLoading(false); return; }
       setLoading(true);
       const uid = session.user.id;
 
-      // re-abrir si ya existe uno open
-      const { data: tOpen } = await supabase
+      const { data: tOpen, error } = await supabase
         .from("support_threads")
         .select("id")
         .eq("user_id", uid)
         .eq("status", "open")
-        .is("brand_id", null)
+        .is("brand_id", null) // soporte general
         .maybeSingle();
 
-      if (tOpen?.id) {
-        setThreadId(tOpen.id);
-        setLoading(false);
-        return;
+      if (error) {
+        console.warn("Error buscando hilo:", error.message);
       }
+      setThreadId(tOpen?.id || null);
+      setLoading(false);
+    })();
+  }, [session?.user?.id]);
 
-      // crear nuevo
-      const { data, error } = await supabase
+  // Auth
+  const login = async () => {
+    await supabase.auth.signInWithOAuth({ provider: "google" });
+  };
+  const logout = async () => { await supabase.auth.signOut(); };
+
+  // Crear hilo + primer mensaje (solo cuando el usuario realmente envía)
+  async function createThreadAndSend() {
+    const msg = firstMsg.trim();
+    if (!msg) return;
+    if (!session?.user?.id) {
+      alert("Necesitás iniciar sesión para enviar mensajes.");
+      return;
+    }
+    setCreating(true);
+    try {
+      const uid = session.user.id;
+
+      // crear hilo
+      const { data: t, error: e1 } = await supabase
         .from("support_threads")
         .insert({ user_id: uid, brand_id: null, status: "open" })
         .select("id")
         .maybeSingle();
 
-      if (error) {
-        setThreadId(null);
-        alert(error.message || "No se pudo abrir soporte.");
-      } else {
-        setThreadId(data?.id || null);
-      }
-      setLoading(false);
-    })();
-  }, [session?.user?.id]);
+      if (e1) throw e1;
+      if (!t?.id) throw new Error("No se pudo crear el ticket.");
 
-  const login = async () => {
-    await supabase.auth.signInWithOAuth({ provider: "google" });
-  };
-  const logout = async () => { await supabase.auth.signOut(); };
+      // insertar primer mensaje
+      const payload = { thread_id: t.id, sender_role: "user", message: msg };
+      const { error: e2 } = await supabase.from("support_messages").insert(payload);
+      if (e2) throw e2;
+
+      setThreadId(t.id);
+      setFirstMsg("");
+    } catch (err) {
+      alert(err.message || "No se pudo abrir el ticket de soporte.");
+    } finally {
+      setCreating(false);
+    }
+  }
 
   return (
     <div className="container">
@@ -80,7 +105,7 @@ export default function Soporte() {
 
       {!session ? (
         <section className="card" style={{ padding: 16, marginTop: 12 }}>
-          <p>Ingresá para abrir el chat de soporte con nuestro equipo.</p>
+          <p>Ingresá para chatear con soporte. No se abrirán tickets hasta que envíes tu primer mensaje.</p>
           <button className="btn" onClick={login}>Ingresar con Google</button>
         </section>
       ) : loading ? (
@@ -88,12 +113,32 @@ export default function Soporte() {
           <div className="skeleton" style={{ height: 80 }} />
         </section>
       ) : threadId ? (
+        // Si ya hay hilo abierto, mostramos el chat normalmente
         <section className="card" style={{ padding: 8, marginTop: 12 }}>
           <ChatBox threadId={threadId} />
         </section>
       ) : (
+        // Si NO hay hilo, mostramos un mini composer. Recién al enviar se crea el ticket.
         <section className="card" style={{ padding: 16, marginTop: 12 }}>
-          <div className="empty">No se pudo abrir un ticket de soporte.</div>
+          <p style={{ marginTop: 0, opacity: 0.9 }}>
+            Contanos brevemente en qué te podemos ayudar. Al enviar, se abrirá tu ticket de soporte.
+          </p>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              className="inp"
+              placeholder="Escribí tu mensaje…"
+              value={firstMsg}
+              onChange={(e) => setFirstMsg(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && createThreadAndSend()}
+              aria-label="Primer mensaje a soporte"
+            />
+            <button className="btn" onClick={createThreadAndSend} disabled={creating || !firstMsg.trim()}>
+              {creating ? "Creando…" : "Enviar"}
+            </button>
+          </div>
+          <small style={{ display: "block", marginTop: 8, opacity: 0.7 }}>
+            Consejo: intentá ser específico para poder ayudarte más rápido. 🙂
+          </small>
         </section>
       )}
 
@@ -103,9 +148,9 @@ export default function Soporte() {
         .card { border:1px solid #1a1a1a; border-radius:14px; background:#0a0a0a; }
         .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; white-space:nowrap; }
         .btn.ghost { background:#0f0f0f; }
+        .inp { flex:1; padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; }
         .skeleton { background:linear-gradient(90deg,#0f0f0f,#151515,#0f0f0f); animation:pulse 1.5s infinite; border-radius:12px; }
         @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
-        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; margin:8px; }
       `}</style>
     </div>
   );
