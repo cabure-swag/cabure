@@ -18,7 +18,7 @@ export default function BrandPage() {
   const [q, setQ] = useState("");
   const [activeCat, setActiveCat] = useState("Todas");
 
-  // Estado para lightbox global (abrimos con la galería del producto clickeado)
+  // Lightbox
   const [lbOpen, setLbOpen] = useState(false);
   const [lbImages, setLbImages] = useState([]);
   const [lbIndex, setLbIndex] = useState(0);
@@ -28,7 +28,6 @@ export default function BrandPage() {
     (async () => {
       setLoading(true);
 
-      // 1) Marca
       const { data: b } = await supabase
         .from("brands")
         .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at")
@@ -36,7 +35,6 @@ export default function BrandPage() {
         .maybeSingle();
       setBrand(b || null);
 
-      // 2) Productos activos & no borrados
       let ps = [];
       if (b?.id) {
         const { data } = await supabase
@@ -49,17 +47,12 @@ export default function BrandPage() {
         ps = data || [];
       }
 
-      const normalized = ps.map((p) => {
-        const imgs = normalizeImages(p).slice(0, 5); // máximo 5
-        return { ...p, images: imgs };
-      });
-
+      const normalized = ps.map((p) => ({ ...p, images: normalizeImages(p).slice(0, 5) }));
       setProducts(normalized);
       setLoading(false);
     })();
   }, [slug]);
 
-  // categorías únicas (pluralizadas para chips)
   const categoriesPlural = useMemo(() => {
     const cats = new Set();
     for (const p of products) {
@@ -69,7 +62,6 @@ export default function BrandPage() {
     return ["Todas", ...Array.from(cats)];
   }, [products]);
 
-  // filtro
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     return products.filter((p) => {
@@ -78,11 +70,9 @@ export default function BrandPage() {
         : [p.name, p.category, p.subcategory]
             .filter(Boolean)
             .some((t) => String(t).toLowerCase().includes(term));
-
       if (activeCat === "Todas") return matchesText;
       const plural = pluralizeEs(p.category || "");
-      const matchesCat = plural === activeCat;
-      return matchesText && matchesCat;
+      return matchesText && plural === activeCat;
     });
   }, [products, q, activeCat]);
 
@@ -91,7 +81,6 @@ export default function BrandPage() {
     addToCart(brand.slug, p, 1);
   }
 
-  // Abre lightbox con imágenes del producto
   function openLightbox(images = [], start = 0) {
     if (!images.length) return;
     setLbImages(images);
@@ -143,7 +132,6 @@ export default function BrandPage() {
                 aria-label="Instagram"
                 title="Instagram"
               >
-                {/* Ícono limpio de Instagram */}
                 <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
                   <g fill="none" stroke="currentColor" strokeWidth="1.5">
                     <rect x="3" y="3" width="18" height="18" rx="5" />
@@ -199,11 +187,13 @@ export default function BrandPage() {
         ) : filtered.length === 0 ? (
           <div className="empty">No hay productos para mostrar.</div>
         ) : (
-          filtered.map((p) => <ProductCard key={p.id} p={p} onAdd={() => handleAdd(p)} onZoom={openLightbox} />)
+          filtered.map((p) => (
+            <ProductCard key={p.id} p={p} onAdd={() => handleAdd(p)} onZoom={openLightbox} />
+          ))
         )}
       </div>
 
-      {/* Lightbox global */}
+      {/* Lightbox */}
       <Lightbox
         open={lbOpen}
         images={lbImages}
@@ -278,22 +268,14 @@ export default function BrandPage() {
   );
 }
 
-/** Card de producto con carrusel (hasta 5 imágenes) */
+import React, { useState } from "react";
 function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
   const src = images[idx] || images[0] || "";
 
-  const prev = (e) => {
-    e.stopPropagation();
-    if (!images.length) return;
-    setIdx((i) => (i <= 0 ? images.length - 1 : i - 1));
-  };
-  const next = (e) => {
-    e.stopPropagation();
-    if (!images.length) return;
-    setIdx((i) => (i >= images.length - 1 ? 0 : i + 1));
-  };
+  const prev = (e) => { e.stopPropagation(); if (!images.length) return; setIdx((i) => (i <= 0 ? images.length - 1 : i - 1)); };
+  const next = (e) => { e.stopPropagation(); if (!images.length) return; setIdx((i) => (i >= images.length - 1 ? 0 : i + 1)); };
 
   return (
     <article className="card">
@@ -324,7 +306,7 @@ function ProductCard({ p, onAdd, onZoom }) {
           <div className="sub">{p.subcategory || p.category}</div>
         )}
         <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
-        <button className="btn" onClick={onAdd} aria-label={`Agregar ${p.name} al carrito`}>
+        <button className="btn btn--primary" onClick={onAdd} aria-label={`Agregar ${p.name} al carrito`}>
           Agregar al carrito
         </button>
       </div>
@@ -342,10 +324,7 @@ function ProductCard({ p, onAdd, onZoom }) {
         }
         .left { left: 8px; }
         .right { right: 8px; }
-        .dots {
-          position: absolute; bottom: 8px; left: 0; right: 0;
-          display:flex; justify-content:center; gap:6px;
-        }
+        .dots { position: absolute; bottom: 8px; left: 0; right: 0; display:flex; justify-content:center; gap:6px; }
         .dot { width: 7px; height: 7px; border-radius: 50%; background: #666; cursor: pointer; }
         .dot.on { background: #fff; }
 
@@ -354,6 +333,12 @@ function ProductCard({ p, onAdd, onZoom }) {
         .sub { font-size:12px; opacity:.8; }
         .price { font-weight:700; }
         .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+        .btn--primary {
+          background: #2563eb; /* azul */
+          border-color: #1e3a8a;
+        }
+        .btn--primary:hover { filter: brightness(1.05); }
+        .btn--primary:focus { outline: 2px solid #93c5fd; outline-offset: 2px; }
       `}</style>
     </article>
   );
