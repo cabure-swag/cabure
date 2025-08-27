@@ -279,30 +279,21 @@ export default function AdminMetrics() {
             <tbody>
               {filteredOrders.map(o => (
                 <tr key={o.id}>
-                  <td>{ymd(o.created_at)}</td>
-                  <td>{o.brand_name}</td>
-                  <td title={o.id}>{o.id.slice(0,8)}…</td>
-                  <td>{o.buyer_email}</td>
-                  <td style={{ textAlign:"right" }}>{o.items_count}</td>
-                  <td style={{ textAlign:"right" }}>${fmtMoney(o.total)}</td>
-                  <td><span className={`badge ${o.status}`}>{o.status}</span></td>
-                  <td>{o.payment_method || "—"}</td>
-                  <td title={o.mp_preference_id || ""}>{o.mp_preference_id ? `${o.mp_preference_id.slice(0,8)}…` : "—"}</td>
-                  <td title={o.mp_payment_id || ""}>{o.mp_payment_id ? `${o.mp_payment_id.slice(0,8)}…` : "—"}</td>
-                  <td>
-                    <div className="row" style={{ gap:6 }}>
-                      <Link className="btn ghost" href={`/admin/support?order=${o.id}`}>Ver chat</Link>
-                      <button className="btn danger" disabled={o.status === "canceled"} onClick={() => cancelOrder(o.id)}>Cancelar</button>
-                      <button
-                        className="btn danger"
-                        disabled={deleting === o.id}
-                        onClick={() => deleteOrder(o.id)}
-                        title="Eliminar definitivamente (requiere escribir el ID)"
-                      >
-                        {deleting === o.id ? "Eliminando…" : "Eliminar"}
-                      </button>
-                    </div>
-                  </td>
+                  <td
+  onClick={() => {
+    navigator.clipboard.writeText(o.id);
+    alert("ID copiado al portapapeles:\n" + o.id);
+  }}
+  style={{
+    cursor: "pointer",
+    color: "#4fc3f7",
+    textDecoration: "underline"
+  }}
+  title="Click para copiar el ID completo"
+>
+  {o.id}
+</td>
+
                 </tr>
               ))}
             </tbody>
