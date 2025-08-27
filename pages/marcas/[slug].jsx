@@ -1,7 +1,6 @@
 // pages/marcas/[slug].jsx
 import Head from "next/head";
 import Image from "next/image";
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -22,7 +21,6 @@ export default function BrandPage() {
     (async () => {
       setLoading(true);
 
-      // Traer marca
       const { data: b } = await supabase
         .from("brands")
         .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at")
@@ -31,7 +29,6 @@ export default function BrandPage() {
 
       setBrand(b || null);
 
-      // Traer productos activos (soft delete)
       const { data: ps } = await supabase
         .from("products")
         .select("id, name, price, image_url, images, category, subcategory, active, deleted_at")
@@ -40,7 +37,6 @@ export default function BrandPage() {
         .is("deleted_at", null)
         .order("created_at", { ascending: false });
 
-      // Normalizar imágenes: preferir images[]; fallback image_url
       const normalized = (ps || []).map((p) => {
         const imgs =
           p.images && Array.isArray(p.images) && p.images.length
@@ -67,8 +63,7 @@ export default function BrandPage() {
   function handleAdd(p) {
     if (!brand?.slug) return;
     addToCart(brand.slug, p, 1);
-    // opcional: toast liviano con alert
-    // alert("Agregado al carrito");
+    // No hace falta setear state: CartSidebar escucha el evento "cart:update"
   }
 
   return (
@@ -91,7 +86,6 @@ export default function BrandPage() {
         <div className="profile__left">
           <div className="logoWrap">
             {brand?.logo_url ? (
-              // si querés Next/Image, mantené fill y sizes; si falla, usá <img />
               <Image src={brand.logo_url} alt={brand?.name || "Logo"} fill sizes="300px" style={{ objectFit:"cover", borderRadius:12 }} />
             ) : (
               <div className="logoPh">Logo</div>
@@ -104,6 +98,7 @@ export default function BrandPage() {
           <div className="row" style={{ gap: 8 }}>
             {brand?.instagram_url && (
               <a href={brand.instagram_url} target="_blank" rel="noreferrer" className="chip" aria-label="Instagram">
+                {/* ícono simple */}
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M12 2.2c3.2 0 3.6 0 4.9.1 1.2.1 1.9.2 2.4.4.6.2 1 .5 1.4.9.4.4.7.8.9 1.4.2.5.3 1.2.4 2.4.1 1.3.1 1.7.1 4.9s0 3.6-.1 4.9c-.1 1.2-.2 1.9-.4 2.4-.2.6-.5 1-.9 1.4-.4.4-.8.7-1.4.9-.5.2-1.2.3-2.4.4-1.3.1-1.7.1-4.9.1s-3.6 0-4.9-.1c-1.2-.1-1.9-.2-2.4-.4-.6-.2-1-.5-1.4-.9-.4-.4-.7-.8-.9-1.4-.2-.5-.3-1.2-.4-2.4C2.2 15.6 2.2 15.2 2.2 12s0-3.6.1-4.9c.1-1.2.2-1.9.4-2.4.2-.6.5-1 .9-1.4.4-.4.8-.7 1.4-.9.5-.2 1.2-.3 2.4-.4C8.4 2.2 8.8 2.2 12 2.2m0-2.2C8.7 0 8.3 0 7 0 5.6.1 4.7.2 4 .5 3.2.8 2.6 1.2 2 1.8.9 2.9.3 4.4.1 6c-.2.9-.2 2-.2 6s0 5.1.2 6c.2 1.6.8 3.1 1.9 4.2 1.1 1.1 2.6 1.7 4.2 1.9.9.2 2 .2 6 .2s5.1 0 6-.2c1.6-.2 3.1-.8 4.2-1.9 1.1-1.1 1.7-2.6 1.9-4.2.2-.9.2-2 .2-6s0-5.1-.2-6C23.7 4.4 23.1 2.9 22 1.8 20.9.7 19.4.1 17.8-.1 16.9-.3 15.8-.3 12-.3z"/><path d="M12 5.8A6.2 6.2 0 1 0 12 18.2 6.2 6.2 0 1 0 12 5.8m0-2.1a8.3 8.3 0 1 1 0 16.6 8.3 8.3 0 0 1 0-16.6zM18.4 4.6a1.5 1.5 0 1 0 0 3.1 1.5 1.5 0 0 0 0-3.1z"/></svg>
                 <span>Instagram</span>
               </a>
@@ -111,7 +106,6 @@ export default function BrandPage() {
           </div>
         </div>
         <div className="profile__right">
-          {/* Carrito a la derecha */}
           {brand?.slug && <CartSidebar brandSlug={brand.slug} />}
         </div>
       </header>
