@@ -1,178 +1,217 @@
 // pages/admin/support.jsx
-import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import VendorChatBox from "@/components/VendorChatBox";
+import ChatBox from "@/components/ChatBox";
+import Link from "next/link";
 
-export default function AdminSupport() {
+function useAuthProfile() {
   const [session, setSession] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  const [brands, setBrands] = useState([]);
-  const [brandId, setBrandId] = useState("all");
-  const [status, setStatus] = useState("open"); // open | closed | all
-  const [threads, setThreads] = useState([]);
-  const [profilesMap, setProfilesMap] = useState({});
-  const [loading, setLoading] = useState(false);
-  const [activeThread, setActiveThread] = useState(null);
-
+  const [profile, setProfile] = useState(null);
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
-    return () => sub?.subscription?.unsubscribe();
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription?.unsubscribe();
   }, []);
-
   useEffect(() => {
     if (!session?.user?.id) return;
-    (async () => {
-      const { data: prof } = await supabase.from("profiles").select("role,email").eq("user_id", session.user.id).maybeSingle();
-      setIsAdmin(prof?.role === "admin");
-      if (prof?.role !== "admin") return;
-
-      const { data: b } = await supabase.from("brands").select("id,name").is("deleted_at", null).order("name");
-      setBrands(b || []);
-    })();
+    supabase
+      .from("profiles")
+      .select("user_id,email,role")
+      .eq("user_id", session.user.id)
+      .maybeSingle()
+      .then(({ data }) => setProfile(data || null));
   }, [session?.user?.id]);
+  return { session, profile };
+}
 
+export default function AdminSupport() {
+  const { session, profile } = useAuthProfile();
+  const isAdmin = profile?.role === "admin";
+
+  const [threads, setThreads] = useState([]);
+  const [brands, setBrands] = useState([]);
+  const [sel, setSel] = useState(null);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("open"); // open | all
+
+  // cargar hilos
+  async function load() {
+    if (!isAdmin) return;
+    const [{ data: bs }, { data: th, error }] = await Promise.all([
+      supabase.from("brands").select("id,name"),
+      supabase
+        .from("support_threads")
+        .select("id,user_id,brand_id,status,created_at")
+        .order("created_at", { ascending: false })
+    ]);
+    if (error) {
+      alert(error.message || "No se pudieron cargar los tickets.");
+      return;
+    }
+    // enriquecer con email del user
+    const userIds = Array.from(new Set((th || []).map(t => t.user_id)));
+    let profilesMap = {};
+    if (userIds.length) {
+      const { data: ps } = await supabase
+        .from("profiles")
+        .select("user_id,email")
+        .in("user_id", userIds);
+      (ps || []).forEach(p => { profilesMap[p.user_id] = p.email; });
+    }
+    const brandMap = {};
+    (bs || []).forEach(b => (brandMap[b.id] = b.name));
+
+    const final = (th || []).map(t => ({
+      ...t,
+      user_email: profilesMap[t.user_id] || "—",
+      brand_name: t.brand_id ? (brandMap[t.brand_id] || "—") : "General"
+    }));
+
+    setBrands(bs || []);
+    setThreads(final);
+  }
+
+  useEffect(() => { load(); /* eslint-disable-line */ }, [isAdmin]);
+
+  // realtime: nuevos hilos para admins
   useEffect(() => {
     if (!isAdmin) return;
-    loadThreads();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, brandId, status]);
+    const ch = supabase
+      .channel("support_threads_admin")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "support_threads" }, (payload) => {
+        setThreads(prev => [{
+          ...payload.new,
+          user_email: "—",
+          brand_name: payload.new.brand_id ? "—" : "General",
+        }, ...prev]);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [isAdmin]);
 
-  async function loadThreads() {
-    setLoading(true);
-    let q = supabase.from("vendor_threads").select("id,brand_id,user_id,status,created_at").order("created_at", { ascending: false });
-
-    if (brandId !== "all") q = q.eq("brand_id", brandId);
-    if (status !== "all") q = q.eq("status", status);
-
-    const { data, error } = await q;
-    setLoading(false);
-    if (error) return;
-
-    setThreads(data || []);
-    const uids = Array.from(new Set((data || []).map((t) => t.user_id)));
-    if (uids.length) {
-      const { data: profs } = await supabase.from("profiles").select("user_id,email").in("user_id", uids);
-      const map = {};
-      (profs || []).forEach((p) => (map[p.user_id] = p.email));
-      setProfilesMap(map);
-    }
-  }
-
-  async function closeThread(id) {
-    if (!confirm("¿Cerrar este hilo?")) return;
-    const { error } = await supabase.from("vendor_threads").update({ status: "closed" }).eq("id", id);
-    if (error) alert(error.message);
-    else {
-      await loadThreads();
-      if (activeThread === id) setActiveThread(null);
-    }
-  }
-
-  async function deleteThread(id) {
-    if (!session?.user?.email) return alert("Sesión inválida");
-    if (!confirm("Eliminar hilo y todos sus mensajes (acción permanente)?")) return;
-
-    const resp = await fetch("/api/admin/vendor-thread-delete.js", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threadId: id, requesterEmail: session.user.email }),
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    return threads.filter(t => {
+      if (status === "open" && t.status !== "open") return false;
+      if (!term) return true;
+      return (
+        t.id.toLowerCase().includes(term) ||
+        (t.user_email || "").toLowerCase().includes(term) ||
+        (t.brand_name || "").toLowerCase().includes(term)
+      );
     });
-    const json = await resp.json();
-    if (!json.ok) return alert(json.error || "No se pudo eliminar");
+  }, [threads, q, status]);
 
-    await loadThreads();
-    if (activeThread === id) setActiveThread(null);
+  function handleClosed() {
+    // tras cerrar/eliminar desde ChatBox, refresco lista
+    load();
+    setSel(null);
   }
 
   if (!session) {
     return (
       <div className="container">
-        <Head><title>Admin · Soporte vendedores — CABURE.STORE</title></Head>
-        <p>Iniciá sesión.</p>
+        <Head><title>Soporte (Admin) — CABURE.STORE</title></Head>
+        <h1>Soporte (Admin)</h1>
+        <p>Necesitás iniciar sesión.</p>
+        <style jsx>{`.container{padding:16px;}`}</style>
       </div>
     );
   }
   if (!isAdmin) {
     return (
       <div className="container">
-        <Head><title>Admin · Soporte vendedores — CABURE.STORE</title></Head>
-        <p>Acceso solo admin.</p>
+        <Head><title>Soporte (Admin) — CABURE.STORE</title></Head>
+        <h1>Soporte (Admin)</h1>
+        <p>No tenés permisos de administrador.</p>
+        <style jsx>{`.container{padding:16px;}`}</style>
       </div>
     );
   }
 
   return (
     <div className="container">
-      <Head><title>Admin · Soporte vendedores — CABURE.STORE</title></Head>
+      <Head><title>Soporte (Admin) — CABURE.STORE</title></Head>
 
-      <div className="row" style={{ gap: 12, alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>Chats de vendedores</h1>
-        <div style={{ flex: 1 }} />
-        <select value={brandId} onChange={(e) => setBrandId(e.target.value)} className="select" aria-label="Filtrar por marca">
-          <option value="all">Todas las marcas</option>
-          {brands.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-        </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className="select" aria-label="Filtrar por estado">
-          <option value="open">Abiertos</option>
-          <option value="closed">Cerrados</option>
-          <option value="all">Todos</option>
-        </select>
-        <button className="btn" onClick={loadThreads}>Actualizar</button>
+      <div className="row" style={{ gap:12, alignItems:"center" }}>
+        <h1 style={{ margin:0 }}>Soporte (Admin)</h1>
+        <div style={{ flex:1 }} />
+        <Link href="/admin" className="btn ghost">Volver a Admin</Link>
       </div>
 
-      <div className="grid2" style={{ marginTop: 12 }}>
-        <div className="threads">
-          {loading && <div className="skeleton" style={{ height: 48 }} />}
-          {threads.map((t) => (
-            <div key={t.id} className={`thread ${activeThread === t.id ? "active" : ""}`}>
-              <button className="threadBtn" onClick={() => setActiveThread(t.id)}>
-                <div className="title">{profilesMap[t.user_id] || t.user_id.slice(0, 8)}</div>
-                <div className="meta">{t.status} · {new Date(t.created_at).toLocaleString()}</div>
-              </button>
-              <div className="actions">
-                {t.status !== "closed" && (
-                  <button className="btn ghost" onClick={() => closeThread(t.id)}>Cerrar</button>
-                )}
-                <button className="btn danger" onClick={() => deleteThread(t.id)}>Eliminar</button>
-              </div>
-            </div>
-          ))}
-          {!loading && threads.length === 0 && <div className="empty">No hay hilos.</div>}
+      {/* Filtros */}
+      <section className="card" style={{ marginTop:12, padding:12 }}>
+        <div className="row" style={{ gap:8, flexWrap:"wrap" }}>
+          <input
+            className="inp"
+            placeholder="Buscar por ID / email / marca…"
+            value={q}
+            onChange={(e)=>setQ(e.target.value)}
+            style={{ minWidth: 260 }}
+          />
+          <div className="row" style={{ gap:6 }}>
+            <button className={`btn ${status==="open" ? "" : "ghost"}`} onClick={()=>setStatus("open")}>Abiertos</button>
+            <button className={`btn ${status==="all" ? "" : "ghost"}`} onClick={()=>setStatus("all")}>Todos</button>
+          </div>
         </div>
+      </section>
 
-        <div className="box">
-          {activeThread ? (
-            <VendorChatBox threadId={activeThread} senderRole="admin" />
+      <div className="grid">
+        <section className="card" style={{ padding:0 }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>ID</th>
+                <th>Usuario</th>
+                <th>Marca</th>
+                <th>Estado</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={6}><div className="empty">Sin tickets.</div></td></tr>
+              ) : filtered.map(t => (
+                <tr key={t.id} className={t.status !== "open" ? "row-closed" : ""}>
+                  <td title={t.created_at}>{new Date(t.created_at).toLocaleString()}</td>
+                  <td title={t.id}>{t.id.slice(0,8)}…</td>
+                  <td>{t.user_email}</td>
+                  <td>{t.brand_name}</td>
+                  <td><span className={`badge ${t.status}`}>{t.status}</span></td>
+                  <td><button className="btn" onClick={()=>setSel(t.id)}>Abrir</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+
+        <section className="card" style={{ padding:12 }}>
+          {!sel ? (
+            <div className="empty">Elegí un ticket para abrir el chat.</div>
           ) : (
-            <div className="empty">Elegí un hilo para ver el chat</div>
+            <ChatBox threadId={sel} adminView onCloseThread={handleClosed} />
           )}
-        </div>
+        </section>
       </div>
 
       <style jsx>{`
-        .container { padding: 16px; }
-        .row { display:flex; }
-        .select { background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:8px 10px; }
-        .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
-        .btn.ghost { background:transparent; }
-        .btn.danger { background:#2a1212; border-color:#462222; }
-
-        .grid2 { display:grid; grid-template-columns: 320px 1fr; gap:12px; }
-        @media (max-width: 900px){ .grid2 { grid-template-columns: 1fr; } }
-        .threads { background:#0a0a0a; border:1px solid #1a1a1a; border-radius:12px; padding:8px; display:grid; gap:8px; }
-        .thread { display:grid; grid-template-columns: 1fr auto; gap:8px; align-items:center; background:#0f0f0f; border:1px solid #222; color:#ddd; border-radius:10px; padding:8px; }
-        .thread.active { border-color:#3a3a3a; color:#fff; background:#171717; }
-        .threadBtn { text-align:left; background:transparent; border:none; color:inherit; cursor:pointer; }
-        .title { font-weight:600; }
-        .meta { font-size:.85rem; opacity:.85; }
-        .actions { display:flex; gap:8px; }
-        .box { min-height: 50vh; background:#0a0a0a; border:1px solid #1a1a1a; border-radius:12px; padding:8px; }
-        .empty { padding:12px; border:1px dashed #2a2a2a; border-radius:12px; text-align:center; opacity:.85; }
-        .skeleton { background: linear-gradient(90deg, #0f0f0f, #151515, #0f0f0f); border-radius:12px; animation: pulse 1.5s infinite; }
-        @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
+        .container { padding:16px; }
+        .row { display:flex; align-items:center; }
+        .grid { display:grid; grid-template-columns: 1.1fr 1fr; gap:12px; margin-top:12px; }
+        @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+        .card { border:1px solid #1a1a1a; border-radius:14px; background:#0a0a0a; }
+        .inp { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; white-space:nowrap; }
+        .btn.ghost { background:#0f0f0f; }
+        .tbl { width:100%; border-collapse:collapse; }
+        .tbl th, .tbl td { padding:8px 10px; border-bottom:1px solid #1a1a1a; text-align:left; }
+        .badge { padding:2px 8px; border-radius:999px; border:1px solid #333; font-size:.75rem; text-transform:lowercase; }
+        .badge.open { background:#111127; color:#cdd6ff; border-color:#23234a; }
+        .badge.closed { background:#2a1717; color:#f8b4b4; border-color:#422; }
+        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; margin:8px; }
+        .row-closed td { opacity:.75; }
       `}</style>
     </div>
   );
