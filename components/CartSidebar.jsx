@@ -6,8 +6,27 @@ import { loadCart, setQty, removeFromCart, cartTotal } from "@/utils/cart";
 export default function CartSidebar({ brandSlug }) {
   const [items, setItems] = useState([]);
 
+  // Cargar al montar + actualizar cuando vuelva el foco
   useEffect(() => {
     setItems(loadCart(brandSlug).items);
+
+    const onFocus = () => setItems(loadCart(brandSlug).items);
+    const onCartUpdate = (e) => {
+      if (e?.detail?.brandSlug === brandSlug) {
+        setItems(loadCart(brandSlug).items);
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", onFocus);
+      window.addEventListener("cart:update", onCartUpdate);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", onFocus);
+        window.removeEventListener("cart:update", onCartUpdate);
+      }
+    };
   }, [brandSlug]);
 
   function changeQty(id, delta) {
@@ -39,7 +58,9 @@ export default function CartSidebar({ brandSlug }) {
               <li key={it.id} className="cart__item">
                 <div className="cart__info">
                   <div className="name">{it.name}</div>
-                  <div className="price">${Number(it.price).toLocaleString("es-AR")}</div>
+                  <div className="price">
+                    ${Number(it.price).toLocaleString("es-AR")}
+                  </div>
                 </div>
                 <div className="cart__qty">
                   <button className="btn ghost" onClick={() => changeQty(it.id, -1)} aria-label="Restar">-</button>
