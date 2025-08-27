@@ -5,24 +5,45 @@ import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import CartSidebar from "@/components/CartSidebar";
 
-/** Convierte lo que venga (URL completa, 'product-images/...', 'brand-logos/...', o solo 'carpeta/archivo.jpg')
- *  a una URL pública de Supabase Storage.
- */
+/** Convierte rutas de Storage o paths simples a URL pública */
 function toPublicURL(input) {
   if (!input) return null;
   const v = String(input).trim();
+  if (!v) return null;
   if (v.startsWith("http://") || v.startsWith("https://")) return v;
 
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/+$/, "");
   if (!base) return null;
 
-  const clean = v.replace(/^\/+/, ""); // saca slashes iniciales
-  // Si ya viene con nombre de bucket:
+  // Quita slashes iniciales
+  const clean = v.replace(/^\/+/, "");
+
+  // Si ya incluye bucket
   if (clean.startsWith("product-images/") || clean.startsWith("brand-logos/")) {
     return `${base}/storage/v1/object/public/${clean}`;
   }
-  // Si solo viene path, asumimos bucket de productos:
+
+  // Si es una ruta simple, asumimos product-images/
   return `${base}/storage/v1/object/public/product-images/${clean}`;
+}
+
+function normalizeImages(images, image_url) {
+  const out = [];
+  try {
+    if (Array.isArray(images)) {
+      images.forEach((x) => x && out.push(toPublicURL(x)));
+    } else if (typeof images === "string") {
+      const s = images.trim();
+      if (s.startsWith("[")) {
+        const arr = JSON.parse(s);
+        if (Array.isArray(arr)) arr.forEach((x) => x && out.push(toPublicURL(x)));
+      } else {
+        out.push(toPublicURL(s));
+      }
+    }
+  } catch {}
+  if (out.length === 0 && image_url) out.push(toPublicURL(image_url));
+  return out.filter(Boolean);
 }
 
 export default function BrandPage() {
@@ -35,41 +56,13 @@ export default function BrandPage() {
   const [productsRaw, setProductsRaw] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
 
-  // Filtros (arriba del catálogo)
+  // Filtros
   const [activeCat, setActiveCat] = useState("Todas");
   const [q, setQ] = useState("");
 
-  // --- helpers ---
-  function normalizeImages(images, image_url) {
-    const out = [];
-    try {
-      if (Array.isArray(images)) {
-        images.forEach((x) => x && out.push(toPublicURL(x)));
-      } else if (typeof images === "string") {
-        const s = images.trim();
-        if (s.startsWith("[")) {
-          const arr = JSON.parse(s);
-          if (Array.isArray(arr)) arr.forEach((x) => x && out.push(toPublicURL(x)));
-        } else {
-          // puede venir una ruta simple
-          out.push(toPublicURL(s));
-        }
-      }
-    } catch {}
-    if (out.length === 0 && image_url) out.push(toPublicURL(image_url));
-    return out.filter(Boolean);
-  }
-
-  function primaryImage(p) {
-    const imgs = normalizeImages(p?.images, p?.image_url);
-    return imgs[0] || "/placeholder.png";
-  }
-
-  // --- fetch brand ---
   useEffect(() => {
     if (!slug) return;
-    let cancelled = false;
-
+    let cancel = false;
     (async () => {
       setLoadingBrand(true);
       const { data: b, error } = await supabase
@@ -78,27 +71,20 @@ export default function BrandPage() {
         .eq("slug", slug)
         .is("deleted_at", null)
         .maybeSingle();
-
-      if (!cancelled) {
+      if (!cancel) {
         setLoadingBrand(false);
         if (!error && b) {
-          // Normalizá logo a URL pública por si quedó guardado como path
           b.logo_url = toPublicURL(b.logo_url);
           setBrand(b);
-        } else {
-          setBrand(null);
-        }
+        } else setBrand(null);
       }
     })();
-
-    return () => { cancelled = true; };
+    return () => { cancel = true; };
   }, [slug]);
 
-  // --- fetch products (solo activos y no borrados) ---
   useEffect(() => {
     if (!brand?.id) return;
-    let cancelled = false;
-
+    let cancel = false;
     (async () => {
       setLoadingProducts(true);
       const { data, error } = await supabase
@@ -108,11 +94,9 @@ export default function BrandPage() {
         .eq("active", true)
         .is("deleted_at", null)
         .order("created_at", { ascending: false });
-
-      if (!cancelled) {
+      if (!cancel) {
         setLoadingProducts(false);
         if (!error) {
-          // Normalizar imágenes a URL pública para cada producto
           const norm = (data || []).map((p) => {
             const arr = normalizeImages(p.images, p.image_url);
             return { ...p, _imagesResolved: arr, _primary: arr[0] || "/placeholder.png" };
@@ -121,11 +105,9 @@ export default function BrandPage() {
         }
       }
     })();
-
-    return () => { cancelled = true; };
+    return () => { cancel = true; };
   }, [brand?.id]);
 
-  // categorías dinámicas (sin “Todas”)
   const categories = useMemo(() => {
     const setC = new Set();
     (productsRaw || []).forEach((p) => {
@@ -135,7 +117,6 @@ export default function BrandPage() {
     return ["Todas", ...Array.from(setC)];
   }, [productsRaw]);
 
-  // aplicar filtros + búsqueda
   const products = useMemo(() => {
     let arr = productsRaw || [];
     if (activeCat !== "Todas") {
@@ -165,7 +146,7 @@ export default function BrandPage() {
         <div className="left">
           <div className="logoWrap">
             {brand?.logo_url ? (
-              <img src={brand.logo_url} alt={`${brand.name} logo`} className="logoImg" loading="lazy" />
+              <img src={brand.logo_url} alt={`${brand?.name || "Marca"} logo`} className="logoImg" loading="lazy" />
             ) : (
               <div className="noLogo">Sin logo</div>
             )}
@@ -205,7 +186,7 @@ export default function BrandPage() {
         </div>
       </section>
 
-      {/* Filtros + búsqueda (ARRIBA del catálogo) */}
+      {/* Filtros + búsqueda */}
       <section className="filters">
         <div className="chips" role="tablist" aria-label="Filtrar por categoría">
           {categories.map((cat) => (
@@ -251,7 +232,7 @@ export default function BrandPage() {
           <article key={p.id} className="card">
             <div className="imgWrap">
               <img
-                src={p._primary || primaryImage(p)}
+                src={p._primary || "/placeholder.png"}
                 alt={p.name}
                 className="prodImg"
                 loading="lazy"
@@ -285,18 +266,13 @@ export default function BrandPage() {
         .logoWrap {
           position:relative;
           width:100%;
-          aspect-ratio:1/1; /* cuadrado completo */
+          aspect-ratio:1/1;
           border-radius:16px;
           overflow:hidden;
           border:1px solid #222;
           background:#0a0a0a;
         }
-        .logoImg {
-          width:100%;
-          height:100%;
-          object-fit:cover;
-          display:block;
-        }
+        .logoImg { width:100%; height:100%; object-fit:cover; display:block; }
         .noLogo { display:flex; align-items:center; justify-content:center; height:100%; color:#999; }
 
         .brandTitle { font-size:1.8rem; }
@@ -349,8 +325,6 @@ function addToCart(brand, product) {
     const cart = raw ? JSON.parse(raw) : { items: [] };
 
     const idx = cart.items.findIndex((it) => it.product_id === product.id);
-
-    // imagen principal ya normalizada si la traemos de productsRaw
     const img = product._primary || product.image_url || null;
 
     if (idx === -1) {
