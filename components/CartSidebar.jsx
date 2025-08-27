@@ -1,92 +1,81 @@
-import React, { useEffect, useMemo, useState } from "react";
+// components/CartSidebar.jsx
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { loadCart, setQty, removeFromCart, cartTotal } from "@/utils/cart";
 
-export default function CartSidebar({ brand }) {
-  const [open, setOpen] = useState(false);
+export default function CartSidebar({ brandSlug }) {
   const [items, setItems] = useState([]);
-  const key = brand ? `cart_${brand.id}` : null;
 
   useEffect(() => {
-    if (!key) return;
-    try {
-      const raw = localStorage.getItem(key);
-      setItems(raw ? JSON.parse(raw).items || [] : []);
-    } catch {}
-  }, [key, open]);
+    setItems(loadCart(brandSlug).items);
+  }, [brandSlug]);
 
-  function total() {
-    return (items || []).reduce((s, it) => s + (Number(it.unit_price || 0) * Number(it.qty || 0)), 0);
+  function changeQty(id, delta) {
+    const it = items.find((x) => x.id === id);
+    if (!it) return;
+    const next = setQty(brandSlug, id, (it.qty || 1) + delta);
+    setItems(next);
   }
 
-  function updateQty(i, val) {
-    const v = Math.max(0, Number(val || 0));
-    const copy = [...items];
-    copy[i].qty = v;
-    if (v === 0) copy.splice(i, 1);
-    persist(copy);
+  function onRemove(id) {
+    const next = removeFromCart(brandSlug, id);
+    setItems(next);
   }
 
-  function persist(newItems) {
-    setItems(newItems);
-    try {
-      localStorage.setItem(key, JSON.stringify({ items: newItems }));
-    } catch {}
-  }
-
-  const count = useMemo(() => (items || []).reduce((s, it) => s + (Number(it.qty || 0)), 0), [items]);
-
-  if (!brand) return null;
+  const total = cartTotal(items);
 
   return (
-    <div className="cartBox">
-      <button className="cartBtn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        Carrito {count > 0 ? `(${count})` : ""}
-      </button>
+    <aside className="cart">
+      <div className="cart__head">
+        <h3 style={{ margin: 0 }}>Tu carrito</h3>
+      </div>
 
-      {open && (
-        <div className="panel">
-          {(items || []).length === 0 ? (
-            <div className="empty">Tu carrito está vacío.</div>
-          ) : (
-            <>
-              <ul className="list">
-                {items.map((it, i) => (
-                  <li key={i} className="row">
-                    <div className="name">{it.name}</div>
-                    <input
-                      className="qty"
-                      type="number"
-                      min={0}
-                      value={it.qty ?? 1}
-                      onChange={(e) => updateQty(i, e.target.value)}
-                      aria-label={`Cantidad para ${it.name}`}
-                    />
-                    <div className="price">${Number(it.unit_price || 0).toLocaleString("es-AR")}</div>
-                  </li>
-                ))}
-              </ul>
-              <div className="footer">
-                <div className="total">Total: ${Number(total()).toLocaleString("es-AR")}</div>
-                <Link href={`/checkout/${brand.slug}`} className="btn pay">Ir a pagar</Link>
-              </div>
-            </>
-          )}
-        </div>
+      {items.length === 0 ? (
+        <div className="empty">Todavía no agregaste productos.</div>
+      ) : (
+        <>
+          <ul className="cart__list">
+            {items.map((it) => (
+              <li key={it.id} className="cart__item">
+                <div className="cart__info">
+                  <div className="name">{it.name}</div>
+                  <div className="price">${Number(it.price).toLocaleString("es-AR")}</div>
+                </div>
+                <div className="cart__qty">
+                  <button className="btn ghost" onClick={() => changeQty(it.id, -1)} aria-label="Restar">-</button>
+                  <span className="q">{it.qty}</span>
+                  <button className="btn ghost" onClick={() => changeQty(it.id, +1)} aria-label="Sumar">+</button>
+                </div>
+                <button className="btn danger" onClick={() => onRemove(it.id)} aria-label="Quitar">Quitar</button>
+              </li>
+            ))}
+          </ul>
+
+          <div className="cart__foot">
+            <div className="total">
+              Total: <b>${total.toLocaleString("es-AR")}</b>
+            </div>
+            <Link href={`/checkout/${brandSlug}`} className="btn primary" aria-label="Finalizar compra">
+              Finalizar compra
+            </Link>
+          </div>
+        </>
       )}
 
       <style jsx>{`
-        .cartBox { position: relative; }
-        .cartBtn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; }
-        .panel { position:absolute; right:0; top:42px; z-index:30; width:320px; max-width:85vw; background:#0a0a0a; border:1px solid #1a1a1a; border-radius:12px; padding:10px; }
-        .empty { padding:10px; border:1px dashed #2a2a2a; border-radius:10px; text-align:center; }
-        .list { display:grid; gap:8px; margin:8px 0; }
-        .row { display:grid; grid-template-columns: 1fr 70px 100px; gap:8px; align-items:center; }
-        .qty { width:100%; padding:8px; border-radius:8px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; }
-        .price { text-align:right; }
-        .footer { display:flex; gap:8px; align-items:center; justify-content:space-between; margin-top:8px; }
-        .total { font-weight:700; }
-        .btn.pay { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#1a1a1a; color:#fff; }
+        .cart { position: sticky; top: 84px; border:1px solid #1a1a1a; background:#0a0a0a; border-radius:14px; padding:12px; }
+        .cart__head { padding-bottom:8px; border-bottom:1px solid #161616; margin-bottom:8px; }
+        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; }
+        .cart__list { display:flex; flex-direction:column; gap:8px; margin:0; padding:0; list-style:none; }
+        .cart__item { border:1px solid #1a1a1a; border-radius:12px; padding:8px; display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:center; }
+        .cart__info .name { font-weight:600; }
+        .cart__qty { display:flex; align-items:center; gap:6px; }
+        .cart__foot { border-top:1px solid #161616; margin-top:10px; padding-top:10px; display:flex; align-items:center; justify-content:space-between; }
+        .btn { padding:6px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; text-decoration:none; }
+        .btn.ghost { background:#0f0f0f; }
+        .btn.danger { background:#2a1616; border-color:#3a2323; }
+        .btn.primary { background:#1a1f2f; border-color:#2a375a; }
       `}</style>
-    </div>
+    </aside>
   );
 }
