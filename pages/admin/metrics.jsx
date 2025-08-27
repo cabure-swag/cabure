@@ -24,7 +24,6 @@ function useAuthProfile() {
   }, [session?.user?.id]);
   return { session, profile };
 }
-
 function fmtMoney(n) {
   const v = Number(n || 0);
   return v.toLocaleString("es-AR", { minimumFractionDigits: 0 });
@@ -48,7 +47,6 @@ export default function AdminMetrics() {
   const { session, profile } = useAuthProfile();
   const isAdmin = profile?.role === "admin";
 
-  // Filtros simples: por mes (YYYY-MM)
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -58,17 +56,16 @@ export default function AdminMetrics() {
   const [orders, setOrders] = useState([]);
   const [brands, setBrands] = useState([]);
   const [brandFilter, setBrandFilter] = useState("all");
+  const [deleting, setDeleting] = useState(null); // orderId en eliminación
 
   async function loadData() {
     if (!isAdmin) return;
     setLoading(true);
 
-    // rango de fechas del mes seleccionado
     const [y, m] = month.split("-").map(Number);
     const start = new Date(y, m - 1, 1);
     const end = new Date(y, m, 1); // exclusivo
 
-    // Traemos marcas (para filtro) y pedidos
     const [{ data: brandsData }, { data: ordersData, error: ordErr }] = await Promise.all([
       supabase
         .from("brands")
@@ -90,8 +87,6 @@ export default function AdminMetrics() {
       return;
     }
 
-    // Compramos emails de compradores y nombres de marca
-    // (evitamos joins server-side para que no compita con RLS estrictas)
     const buyerIds = Array.from(new Set((ordersData || []).map(o => o.buyer_id).filter(Boolean)));
     let buyerProfiles = {};
     if (buyerIds.length) {
@@ -102,25 +97,21 @@ export default function AdminMetrics() {
       for (const p of (buyers || [])) buyerProfiles[p.user_id] = p.email;
     }
 
-    // Contar ítems por pedido
     const orderIds = Array.from(new Set((ordersData || []).map(o => o.id)));
     let itemsCountByOrder = {};
     if (orderIds.length) {
       const { data: itemsAgg } = await supabase
         .from("order_items")
         .select("order_id, qty");
-      // filtramos client-side a los del mes para evitar sobreselect si RLS es permisiva
       (itemsAgg || []).forEach(it => {
         if (!orderIds.includes(it.order_id)) return;
         itemsCountByOrder[it.order_id] = (itemsCountByOrder[it.order_id] || 0) + Number(it.qty || 0);
       });
     }
 
-    // Mapear marcas
     const brandById = {};
-    (brandsData || []).forEach(b => brandById[b.id] = b);
+    (brandsData || []).forEach(b => (brandById[b.id] = b));
 
-    // Merge final
     const compiled = (ordersData || []).map(o => ({
       ...o,
       buyer_email: buyerProfiles[o.buyer_id] || "—",
@@ -133,7 +124,7 @@ export default function AdminMetrics() {
     setLoading(false);
   }
 
-  useEffect(() => { loadData(); /* eslint-disable-next-line */ }, [isAdmin, month]);
+  useEffect(() => { loadData(); /* eslint-disable-line */ }, [isAdmin, month]);
 
   const filteredOrders = useMemo(() => {
     return orders.filter(o => (brandFilter === "all" ? true : o.brand_id === brandFilter));
@@ -151,31 +142,44 @@ export default function AdminMetrics() {
   }, [filteredOrders]);
 
   async function cancelOrder(orderId) {
-    if (!confirm("¿Cancelar este pedido? Esto lo marca como 'canceled'.\n(No borra registros.)")) return;
-    const { error } = await supabase
-      .from("orders")
-      .update({ status: "canceled" })
-      .eq("id", orderId);
+    if (!confirm("¿Cancelar este pedido? Quedará con estado 'canceled'.\n(No borra registros.)")) return;
+    const { error } = await supabase.from("orders").update({ status: "canceled" }).eq("id", orderId);
     if (error) {
-      alert(error.message || "No se pudo cancelar el pedido. Revisa RLS (admin).");
+      alert(error.message || "No se pudo cancelar el pedido. Revisá RLS (admin).");
       return;
     }
-    // refrescamos en memoria
     setOrders(prev => prev.map(o => (o.id === orderId ? { ...o, status: "canceled" } : o)));
+  }
+
+  async function deleteOrder(orderId) {
+    // Doble confirmación: confirm() + ingresar el ID completo
+    if (!confirm("⚠️ Esto elimina DEFINITIVAMENTE el pedido y sus ítems.\n¿Continuar?")) return;
+    const typed = prompt(
+      `Para confirmar, escribí EXACTAMENTE el ID del pedido:\n\n${orderId}\n\n` +
+      "Esto es irreversible."
+    );
+    if (typed !== orderId) {
+      alert("El ID ingresado no coincide. No se eliminó el pedido.");
+      return;
+    }
+
+    setDeleting(orderId);
+    try {
+      const { error: e1 } = await supabase.from("order_items").delete().eq("order_id", orderId);
+      if (e1) throw e1;
+      const { error: e2 } = await supabase.from("orders").delete().eq("id", orderId);
+      if (e2) throw e2;
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+    } catch (err) {
+      alert(err.message || "No se pudo eliminar el pedido. Revisá RLS (admin).");
+    } finally {
+      setDeleting(null);
+    }
   }
 
   async function exportCSV() {
     const headers = [
-      "fecha",
-      "marca",
-      "pedido_id",
-      "buyer_email",
-      "items",
-      "total_ars",
-      "status",
-      "payment_method",
-      "mp_preference_id",
-      "mp_payment_id",
+      "fecha","marca","pedido_id","buyer_email","items","total_ars","status","payment_method","mp_preference_id","mp_payment_id",
     ];
     const rows = filteredOrders.map(o => ([
       ymd(o.created_at),
@@ -203,7 +207,6 @@ export default function AdminMetrics() {
       </div>
     );
   }
-
   if (!isAdmin) {
     return (
       <div className="container">
@@ -230,14 +233,8 @@ export default function AdminMetrics() {
         <div className="row" style={{ gap:12, alignItems:"center", flexWrap:"wrap" }}>
           <div className="block">
             <label>Mes</label>
-            <input
-              className="inp"
-              type="month"
-              value={month}
-              onChange={(e)=>setMonth(e.target.value)}
-            />
+            <input className="inp" type="month" value={month} onChange={(e)=>setMonth(e.target.value)} />
           </div>
-
           <div className="block">
             <label>Marca</label>
             <select className="inp" value={brandFilter} onChange={(e)=>setBrandFilter(e.target.value)}>
@@ -245,33 +242,18 @@ export default function AdminMetrics() {
               {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </div>
-
           <div style={{ flex:1 }} />
-
           <div className="kpis">
-            <div className="kpi">
-              <div className="kpiTop">Pedidos</div>
-              <div className="kpiNum">{totals.count}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpiTop">Total ARS</div>
-              <div className="kpiNum">${fmtMoney(totals.total)}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpiTop">Pagado</div>
-              <div className="kpiNum">${fmtMoney(totals.paid)}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpiTop">Cancelados</div>
-              <div className="kpiNum">{totals.canceled}</div>
-            </div>
+            <div className="kpi"><div className="kpiTop">Pedidos</div><div className="kpiNum">{filteredOrders.length}</div></div>
+            <div className="kpi"><div className="kpiTop">Total ARS</div><div className="kpiNum">${fmtMoney(filteredOrders.reduce((a,o)=>a+Number(o.total||0),0))}</div></div>
+            <div className="kpi"><div className="kpiTop">Pagado</div><div className="kpiNum">${fmtMoney(filteredOrders.filter(o=>o.status==="paid").reduce((a,o)=>a+Number(o.total||0),0))}</div></div>
+            <div className="kpi"><div className="kpiTop">Cancelados</div><div className="kpiNum">{filteredOrders.filter(o=>o.status==="canceled").length}</div></div>
           </div>
-
           <button className="btn" onClick={exportCSV}>Exportar CSV</button>
         </div>
       </section>
 
-      {/* Tabla pedidos */}
+      {/* Tabla */}
       <section className="card" style={{ marginTop:12, padding:0, overflowX:"auto" }}>
         {loading ? (
           <div className="skeleton" style={{ height:120 }} />
@@ -299,27 +281,25 @@ export default function AdminMetrics() {
                 <tr key={o.id}>
                   <td>{ymd(o.created_at)}</td>
                   <td>{o.brand_name}</td>
-                  <td>{o.id.slice(0,8)}…</td>
+                  <td title={o.id}>{o.id.slice(0,8)}…</td>
                   <td>{o.buyer_email}</td>
                   <td style={{ textAlign:"right" }}>{o.items_count}</td>
                   <td style={{ textAlign:"right" }}>${fmtMoney(o.total)}</td>
-                  <td>
-                    <span className={`badge ${o.status}`}>
-                      {o.status}
-                    </span>
-                  </td>
+                  <td><span className={`badge ${o.status}`}>{o.status}</span></td>
                   <td>{o.payment_method || "—"}</td>
                   <td title={o.mp_preference_id || ""}>{o.mp_preference_id ? `${o.mp_preference_id.slice(0,8)}…` : "—"}</td>
                   <td title={o.mp_payment_id || ""}>{o.mp_payment_id ? `${o.mp_payment_id.slice(0,8)}…` : "—"}</td>
                   <td>
                     <div className="row" style={{ gap:6 }}>
                       <Link className="btn ghost" href={`/admin/support?order=${o.id}`}>Ver chat</Link>
+                      <button className="btn danger" disabled={o.status === "canceled"} onClick={() => cancelOrder(o.id)}>Cancelar</button>
                       <button
                         className="btn danger"
-                        disabled={o.status === "canceled"}
-                        onClick={() => cancelOrder(o.id)}
+                        disabled={deleting === o.id}
+                        onClick={() => deleteOrder(o.id)}
+                        title="Eliminar definitivamente (requiere escribir el ID)"
                       >
-                        Cancelar
+                        {deleting === o.id ? "Eliminando…" : "Eliminar"}
                       </button>
                     </div>
                   </td>
