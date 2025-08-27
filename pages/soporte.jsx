@@ -4,115 +4,109 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import ChatBox from "@/components/ChatBox";
 
-export default function Soporte(){
+export default function Soporte() {
   const [session, setSession] = useState(null);
-  const [threads, setThreads] = useState([]);
-  const [active, setActive] = useState(null);
-  const [brands, setBrands] = useState({});
+  const [threadId, setThreadId] = useState(null);
+  const [loading, setLoading] = useState(true);
 
+  // sesión
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
   }, []);
 
+  // crear/abrir hilo del usuario (status=open y sin brand_id específico)
   useEffect(() => {
-    if (!session?.user?.id) return;
-    let cancel = false;
-    (async ()=>{
+    (async () => {
+      if (!session?.user?.id) { setThreadId(null); setLoading(false); return; }
+      setLoading(true);
       const uid = session.user.id;
-      const { data: ts } = await supabase
-        .from("support_threads")
-        .select("id,brand_id,status,created_at")
-        .eq("user_id", uid)
-        .order("status",{ ascending:true })
-        .order("created_at",{ ascending:false });
-      if (cancel) return;
-      setThreads(ts || []);
-      setActive(ts?.[0]?.id || null);
 
-      const brandIds = Array.from(new Set((ts||[]).map(t => t.brand_id).filter(Boolean)));
-      if (brandIds.length){
-        const { data: bs } = await supabase.from("brands").select("id,name").in("id", brandIds);
-        const map = {}; (bs||[]).forEach(b => map[b.id] = b.name);
-        setBrands(map);
+      // re-abrir si ya existe uno open
+      const { data: tOpen } = await supabase
+        .from("support_threads")
+        .select("id")
+        .eq("user_id", uid)
+        .eq("status", "open")
+        .is("brand_id", null)
+        .maybeSingle();
+
+      if (tOpen?.id) {
+        setThreadId(tOpen.id);
+        setLoading(false);
+        return;
       }
+
+      // crear nuevo
+      const { data, error } = await supabase
+        .from("support_threads")
+        .insert({ user_id: uid, brand_id: null, status: "open" })
+        .select("id")
+        .maybeSingle();
+
+      if (error) {
+        setThreadId(null);
+        alert(error.message || "No se pudo abrir soporte.");
+      } else {
+        setThreadId(data?.id || null);
+      }
+      setLoading(false);
     })();
-    return () => { cancel = true; };
   }, [session?.user?.id]);
 
-  async function newThread(){
-    if (!session?.user?.id) return;
-    const { data, error } = await supabase
-      .from("support_threads")
-      .insert({ user_id: session.user.id, status: "open" })
-      .select("id").maybeSingle();
-    if (error) { alert("No se pudo abrir soporte."); return; }
-    setThreads(arr => [ { id: data.id, brand_id: null, status: "open", created_at: new Date().toISOString() }, ...arr ]);
-    setActive(data.id);
-  }
-
-  if (!session?.user) {
-    return (
-      <div className="container">
-        <Head><title>Soporte — CABURE.STORE</title></Head>
-        <div className="status-empty">
-          <p>Ingresá para ver tus chats.</p>
-          <button className="btn btn-primary" onClick={()=>supabase.auth.signInWithOAuth({ provider:"google" })}>
-            Ingresar con Google
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const login = async () => {
+    await supabase.auth.signInWithOAuth({ provider: "google" });
+  };
+  const logout = async () => { await supabase.auth.signOut(); };
 
   return (
     <div className="container">
-      <Head><title>Soporte — CABURE.STORE</title></Head>
-      <div className="row" style={{ alignItems:"center" }}>
-        <h1 style={{ margin:0 }}>Mis chats</h1>
-        <div style={{ flex:1 }} />
-        <button className="btn" onClick={newThread}>Nuevo chat</button>
-      </div>
+      <Head>
+        <title>Soporte — CABURE.STORE</title>
+        <meta name="robots" content="noindex,nofollow" />
+      </Head>
 
-      <div style={{ marginTop:12, display:"grid", gridTemplateColumns:"320px 1fr", gap:16 }}>
-        <section className="card" style={{ padding:12 }}>
-          {threads.length === 0 ? (
-            <div className="status-empty">No tenés chats aún.</div>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <h1 style={{ margin: 0 }}>Soporte</h1>
+        <div className="row" style={{ gap: 8 }}>
+          {!session ? (
+            <button className="btn" onClick={login} aria-label="Ingresar con Google">Ingresar</button>
           ) : (
-            <ul style={{ listStyle:"none", padding:0, margin:0, display:"grid", gap:8 }}>
-              {threads.map(t => {
-                const activeRow = t.id === active;
-                return (
-                  <li key={t.id}>
-                    <button
-                      className="btn"
-                      onClick={()=>setActive(t.id)}
-                      style={{
-                        width:"100%", justifyContent:"flex-start",
-                        background: activeRow ? "var(--brand)" : "var(--panel)",
-                        color: activeRow ? "#000" : "var(--text)",
-                        border:"1px solid var(--border)"
-                      }}
-                    >
-                      <div style={{ textAlign:"left" }}>
-                        <div style={{ fontWeight:600 }}>{brands[t.brand_id] || "Soporte general"}</div>
-                        <div style={{ fontSize:12, opacity:.8 }}>
-                          {t.status} · {new Date(t.created_at).toLocaleString("es-AR", { hour12:false })}
-                        </div>
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <button className="btn ghost" onClick={logout}>Salir</button>
           )}
-        </section>
-
-        <section className="card" style={{ padding:12, minHeight:520 }}>
-          {!active ? <div className="status-empty">Elegí un chat a la izquierda.</div> : <ChatBox threadId={active} />}
-        </section>
+        </div>
       </div>
+
+      {!session ? (
+        <section className="card" style={{ padding: 16, marginTop: 12 }}>
+          <p>Ingresá para abrir el chat de soporte con nuestro equipo.</p>
+          <button className="btn" onClick={login}>Ingresar con Google</button>
+        </section>
+      ) : loading ? (
+        <section className="card" style={{ padding: 16, marginTop: 12 }}>
+          <div className="skeleton" style={{ height: 80 }} />
+        </section>
+      ) : threadId ? (
+        <section className="card" style={{ padding: 8, marginTop: 12 }}>
+          <ChatBox threadId={threadId} />
+        </section>
+      ) : (
+        <section className="card" style={{ padding: 16, marginTop: 12 }}>
+          <div className="empty">No se pudo abrir un ticket de soporte.</div>
+        </section>
+      )}
+
+      <style jsx>{`
+        .container { padding: 16px; }
+        .row { display: flex; align-items: center; }
+        .card { border:1px solid #1a1a1a; border-radius:14px; background:#0a0a0a; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; white-space:nowrap; }
+        .btn.ghost { background:#0f0f0f; }
+        .skeleton { background:linear-gradient(90deg,#0f0f0f,#151515,#0f0f0f); animation:pulse 1.5s infinite; border-radius:12px; }
+        @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
+        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; margin:8px; }
+      `}</style>
     </div>
   );
 }
