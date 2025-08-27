@@ -1,212 +1,358 @@
 // pages/admin/metrics.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
-function currency(n) {
-  return new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0);
-}
-
-export default function AdminMetrics() {
+// ------- Utils -------
+function useAuthProfile() {
   const [session, setSession] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  const [brands, setBrands] = useState([]);
-  const [brandId, setBrandId] = useState("all");
-  const [from, setFrom] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString());
-  const [to, setTo] = useState(() => new Date().toISOString());
-
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [openRow, setOpenRow] = useState(null);
-  const [itemsMap, setItemsMap] = useState({}); // order_id -> items[]
-
+  const [profile, setProfile] = useState(null);
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
-    return () => sub?.subscription?.unsubscribe();
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription?.unsubscribe();
   }, []);
-
   useEffect(() => {
     if (!session?.user?.id) return;
-    (async () => {
-      const { data: prof } = await supabase.from("profiles").select("role").eq("user_id", session.user.id).maybeSingle();
-      setIsAdmin(prof?.role === "admin");
-      if (prof?.role !== "admin") return;
-
-      const { data: b } = await supabase.from("brands").select("id,name").is("deleted_at", null).order("name");
-      setBrands(b || []);
-    })();
+    supabase
+      .from("profiles")
+      .select("user_id,email,role")
+      .eq("user_id", session.user.id)
+      .maybeSingle()
+      .then(({ data }) => setProfile(data || null));
   }, [session?.user?.id]);
+  return { session, profile };
+}
 
-  useEffect(() => {
+function fmtMoney(n) {
+  const v = Number(n || 0);
+  return v.toLocaleString("es-AR", { minimumFractionDigits: 0 });
+}
+function ymd(d) {
+  const dt = new Date(d);
+  return dt.toISOString().slice(0, 10);
+}
+function fileDownload(name, text) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ------- Página -------
+export default function AdminMetrics() {
+  const { session, profile } = useAuthProfile();
+  const isAdmin = profile?.role === "admin";
+
+  // Filtros simples: por mes (YYYY-MM)
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+
+  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState([]);
+  const [brands, setBrands] = useState([]);
+  const [brandFilter, setBrandFilter] = useState("all");
+
+  async function loadData() {
     if (!isAdmin) return;
-    loadOrders();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, brandId, from, to]);
-
-  async function loadOrders() {
     setLoading(true);
-    let q = supabase.from("orders")
-      .select("id,brand_id,buyer_id,total,status,payment_method,mp_payment_id,created_at")
-      .gte("created_at", from)
-      .lte("created_at", to)
-      .order("created_at", { ascending: false });
 
-    if (brandId !== "all") q = q.eq("brand_id", brandId);
+    // rango de fechas del mes seleccionado
+    const [y, m] = month.split("-").map(Number);
+    const start = new Date(y, m - 1, 1);
+    const end = new Date(y, m, 1); // exclusivo
 
-    const { data, error } = await q;
+    // Traemos marcas (para filtro) y pedidos
+    const [{ data: brandsData }, { data: ordersData, error: ordErr }] = await Promise.all([
+      supabase
+        .from("brands")
+        .select("id,name,slug,deleted_at")
+        .order("name", { ascending: true }),
+      supabase
+        .from("orders")
+        .select("id, brand_id, buyer_id, total, status, payment_method, mp_payment_id, mp_preference_id, created_at")
+        .gte("created_at", start.toISOString())
+        .lt("created_at", end.toISOString())
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (ordErr) {
+      setOrders([]);
+      setBrands(brandsData || []);
+      setLoading(false);
+      alert(ordErr.message || "No se pudieron cargar los pedidos.");
+      return;
+    }
+
+    // Compramos emails de compradores y nombres de marca
+    // (evitamos joins server-side para que no compita con RLS estrictas)
+    const buyerIds = Array.from(new Set((ordersData || []).map(o => o.buyer_id).filter(Boolean)));
+    let buyerProfiles = {};
+    if (buyerIds.length) {
+      const { data: buyers } = await supabase
+        .from("profiles")
+        .select("user_id,email")
+        .in("user_id", buyerIds);
+      for (const p of (buyers || [])) buyerProfiles[p.user_id] = p.email;
+    }
+
+    // Contar ítems por pedido
+    const orderIds = Array.from(new Set((ordersData || []).map(o => o.id)));
+    let itemsCountByOrder = {};
+    if (orderIds.length) {
+      const { data: itemsAgg } = await supabase
+        .from("order_items")
+        .select("order_id, qty");
+      // filtramos client-side a los del mes para evitar sobreselect si RLS es permisiva
+      (itemsAgg || []).forEach(it => {
+        if (!orderIds.includes(it.order_id)) return;
+        itemsCountByOrder[it.order_id] = (itemsCountByOrder[it.order_id] || 0) + Number(it.qty || 0);
+      });
+    }
+
+    // Mapear marcas
+    const brandById = {};
+    (brandsData || []).forEach(b => brandById[b.id] = b);
+
+    // Merge final
+    const compiled = (ordersData || []).map(o => ({
+      ...o,
+      buyer_email: buyerProfiles[o.buyer_id] || "—",
+      brand_name: brandById[o.brand_id]?.name || "—",
+      items_count: itemsCountByOrder[o.id] || 0,
+    }));
+
+    setBrands(brandsData || []);
+    setOrders(compiled);
     setLoading(false);
-    if (error) return;
-    setOrders(data || []);
   }
 
-  async function loadItems(orderId) {
-    if (itemsMap[orderId]) return; // cached
-    const { data } = await supabase
-      .from("order_items")
-      .select("id,product_id,qty,unit_price,created_at,products(name)")
-      .eq("order_id", orderId);
-    setItemsMap((m) => ({ ...m, [orderId]: data || [] }));
-  }
+  useEffect(() => { loadData(); /* eslint-disable-next-line */ }, [isAdmin, month]);
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter(o => (brandFilter === "all" ? true : o.brand_id === brandFilter));
+  }, [orders, brandFilter]);
+
+  const totals = useMemo(() => {
+    const t = filteredOrders.reduce((acc, o) => {
+      acc.total += Number(o.total || 0);
+      acc.count += 1;
+      if (o.status === "paid") acc.paid += Number(o.total || 0);
+      if (o.status === "canceled") acc.canceled += 1;
+      return acc;
+    }, { total: 0, count: 0, paid: 0, canceled: 0 });
+    return t;
+  }, [filteredOrders]);
 
   async function cancelOrder(orderId) {
-    if (!session?.user?.email) return alert("Sesión inválida");
-    if (!confirm("¿Cancelar/Eliminar este pedido?")) return;
-    const resp = await fetch("/api/admin/order-cancel.js", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orderId, requesterEmail: session.user.email }),
-    });
-    const json = await resp.json();
-    if (!json.ok) return alert(json.error || "No se pudo cancelar");
-    await loadOrders();
-    alert("Pedido cancelado");
+    if (!confirm("¿Cancelar este pedido? Esto lo marca como 'canceled'.\n(No borra registros.)")) return;
+    const { error } = await supabase
+      .from("orders")
+      .update({ status: "canceled" })
+      .eq("id", orderId);
+    if (error) {
+      alert(error.message || "No se pudo cancelar el pedido. Revisa RLS (admin).");
+      return;
+    }
+    // refrescamos en memoria
+    setOrders(prev => prev.map(o => (o.id === orderId ? { ...o, status: "canceled" } : o)));
+  }
+
+  async function exportCSV() {
+    const headers = [
+      "fecha",
+      "marca",
+      "pedido_id",
+      "buyer_email",
+      "items",
+      "total_ars",
+      "status",
+      "payment_method",
+      "mp_preference_id",
+      "mp_payment_id",
+    ];
+    const rows = filteredOrders.map(o => ([
+      ymd(o.created_at),
+      o.brand_name,
+      o.id,
+      o.buyer_email,
+      o.items_count,
+      String(o.total || 0).replace(".", ","),
+      o.status,
+      o.payment_method || "",
+      o.mp_preference_id || "",
+      o.mp_payment_id || "",
+    ]));
+    const csv = [headers.join(","), ...rows.map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(","))].join("\n");
+    fileDownload(`pedidos-${month}.csv`, csv);
   }
 
   if (!session) {
     return (
       <div className="container">
-        <Head><title>Admin · Métricas — CABURE.STORE</title></Head>
-        <p>Iniciá sesión.</p>
+        <Head><title>Métricas — CABURE.STORE</title></Head>
+        <h1>Métricas</h1>
+        <p>Necesitás iniciar sesión.</p>
+        <style jsx>{`.container{padding:16px;}`}</style>
       </div>
     );
   }
+
   if (!isAdmin) {
     return (
       <div className="container">
-        <Head><title>Admin · Métricas — CABURE.STORE</title></Head>
-        <p>Acceso solo admin.</p>
+        <Head><title>Métricas — CABURE.STORE</title></Head>
+        <h1>Métricas</h1>
+        <p>No tenés permisos de administrador.</p>
+        <style jsx>{`.container{padding:16px;}`}</style>
       </div>
     );
   }
 
   return (
     <div className="container">
-      <Head><title>Admin · Métricas — CABURE.STORE</title></Head>
+      <Head><title>Métricas — CABURE.STORE</title></Head>
 
-      <div className="row" style={{ gap:12, alignItems:"center" }}>
-        <h1 style={{ margin:0 }}>Pedidos</h1>
+      <div className="row" style={{ alignItems:"center", gap:12 }}>
+        <h1 style={{ margin:0 }}>Métricas</h1>
         <div style={{ flex:1 }} />
-        <select value={brandId} onChange={(e)=>setBrandId(e.target.value)} className="select" aria-label="Marca">
-          <option value="all">Todas</option>
-          {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        <input type="datetime-local" value={toLocal(from)} onChange={(e)=>setFrom(fromLocal(e.target.value))} className="select"/>
-        <input type="datetime-local" value={toLocal(to)} onChange={(e)=>setTo(fromLocal(e.target.value))} className="select"/>
-        <button className="btn" onClick={loadOrders}>Actualizar</button>
+        <Link href="/admin" className="btn ghost">Volver a Admin</Link>
       </div>
 
-      {loading && <div className="skeleton" style={{ height: 56, marginTop: 12 }} />}
-
-      <div className="table" style={{ marginTop:12 }}>
-        <div className="thead">
-          <div>Fecha</div>
-          <div>Pedido</div>
-          <div>Marca</div>
-          <div>Cliente</div>
-          <div>Método</div>
-          <div>Total</div>
-          <div>Estado</div>
-          <div>Acciones</div>
-        </div>
-
-        {orders.map(o => (
-          <div key={o.id} className="rowset">
-            <div className="trow">
-              <div>{new Date(o.created_at).toLocaleString()}</div>
-              <div>{o.id.slice(0,8)}…</div>
-              <div>{o.brand_id.slice(0,8)}…</div>
-              <div>{o.buyer_id.slice(0,8)}…</div>
-              <div>{o.payment_method || "-"}</div>
-              <div>{currency(o.total)}</div>
-              <div>{o.status}</div>
-              <div className="actions">
-                <button className="btn ghost" onClick={() => { setOpenRow(openRow === o.id ? null : o.id); if (openRow !== o.id) loadItems(o.id); }}>
-                  {openRow === o.id ? "Ocultar" : "Ver ítems"}
-                </button>
-                {o.status !== "canceled" && (
-                  <button className="btn danger" onClick={() => cancelOrder(o.id)}>Cancelar</button>
-                )}
-              </div>
-            </div>
-            {openRow === o.id && (
-              <div className="items">
-                <div className="thead sub">
-                  <div>Producto</div>
-                  <div>Cant.</div>
-                  <div>Unitario</div>
-                  <div>Subtotal</div>
-                </div>
-                {(itemsMap[o.id] || []).map(it => (
-                  <div key={it.id} className="trow sub">
-                    <div>{it.products?.name || it.product_id.slice(0,8)}</div>
-                    <div>{it.qty}</div>
-                    <div>{currency(it.unit_price)}</div>
-                    <div>{currency((it.unit_price || 0) * (it.qty || 0))}</div>
-                  </div>
-                ))}
-                {(itemsMap[o.id]?.length === 0) && <div className="empty">Sin ítems.</div>}
-              </div>
-            )}
+      {/* Filtros */}
+      <section className="card" style={{ marginTop:12, padding:12 }}>
+        <div className="row" style={{ gap:12, alignItems:"center", flexWrap:"wrap" }}>
+          <div className="block">
+            <label>Mes</label>
+            <input
+              className="inp"
+              type="month"
+              value={month}
+              onChange={(e)=>setMonth(e.target.value)}
+            />
           </div>
-        ))}
 
-        {!loading && orders.length === 0 && (
-          <div className="empty">Sin pedidos en el rango seleccionado.</div>
+          <div className="block">
+            <label>Marca</label>
+            <select className="inp" value={brandFilter} onChange={(e)=>setBrandFilter(e.target.value)}>
+              <option value="all">Todas</option>
+              {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </div>
+
+          <div style={{ flex:1 }} />
+
+          <div className="kpis">
+            <div className="kpi">
+              <div className="kpiTop">Pedidos</div>
+              <div className="kpiNum">{totals.count}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTop">Total ARS</div>
+              <div className="kpiNum">${fmtMoney(totals.total)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTop">Pagado</div>
+              <div className="kpiNum">${fmtMoney(totals.paid)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTop">Cancelados</div>
+              <div className="kpiNum">{totals.canceled}</div>
+            </div>
+          </div>
+
+          <button className="btn" onClick={exportCSV}>Exportar CSV</button>
+        </div>
+      </section>
+
+      {/* Tabla pedidos */}
+      <section className="card" style={{ marginTop:12, padding:0, overflowX:"auto" }}>
+        {loading ? (
+          <div className="skeleton" style={{ height:120 }} />
+        ) : filteredOrders.length === 0 ? (
+          <div className="empty">Sin pedidos en este rango.</div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Marca</th>
+                <th>Pedido</th>
+                <th>Comprador</th>
+                <th>Items</th>
+                <th>Total</th>
+                <th>Estado</th>
+                <th>Pago</th>
+                <th>MP Pref</th>
+                <th>MP Pay</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredOrders.map(o => (
+                <tr key={o.id}>
+                  <td>{ymd(o.created_at)}</td>
+                  <td>{o.brand_name}</td>
+                  <td>{o.id.slice(0,8)}…</td>
+                  <td>{o.buyer_email}</td>
+                  <td style={{ textAlign:"right" }}>{o.items_count}</td>
+                  <td style={{ textAlign:"right" }}>${fmtMoney(o.total)}</td>
+                  <td>
+                    <span className={`badge ${o.status}`}>
+                      {o.status}
+                    </span>
+                  </td>
+                  <td>{o.payment_method || "—"}</td>
+                  <td title={o.mp_preference_id || ""}>{o.mp_preference_id ? `${o.mp_preference_id.slice(0,8)}…` : "—"}</td>
+                  <td title={o.mp_payment_id || ""}>{o.mp_payment_id ? `${o.mp_payment_id.slice(0,8)}…` : "—"}</td>
+                  <td>
+                    <div className="row" style={{ gap:6 }}>
+                      <Link className="btn ghost" href={`/admin/support?order=${o.id}`}>Ver chat</Link>
+                      <button
+                        className="btn danger"
+                        disabled={o.status === "canceled"}
+                        onClick={() => cancelOrder(o.id)}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
-      </div>
+      </section>
 
       <style jsx>{`
-        .container { padding: 16px; }
-        .row { display:flex; }
-        .select { background:#0f0f0f; color:#fff; border:1px solid #2a2a2a; border-radius:10px; padding:8px 10px; }
-        .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
-        .btn.ghost { background:transparent; }
-        .btn.danger { background:#2a1212; border-color:#462222; }
-        .skeleton { background: linear-gradient(90deg, #0f0f0f, #151515, #0f0f0f); border-radius:12px; animation: pulse 1.5s infinite; }
+        .container { padding:16px; }
+        .row { display:flex; align-items:center; }
+        .card { border:1px solid #1a1a1a; border-radius:14px; background:#0a0a0a; }
+        .block { display:grid; gap:6px; }
+        .inp { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; white-space:nowrap; }
+        .btn.ghost { background:#0f0f0f; }
+        .btn.danger { background:#1c1313; border-color:#3a2222; }
+        .kpis { display:flex; gap:10px; margin-left:auto; }
+        .kpi { border:1px solid #222; border-radius:10px; padding:8px 10px; background:#0f0f0f; }
+        .kpiTop { font-size:.8rem; opacity:.8; }
+        .kpiNum { font-size:1.1rem; font-weight:700; }
+        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; margin:8px; }
+        .skeleton { background:linear-gradient(90deg,#0f0f0f,#151515,#0f0f0f); animation:pulse 1.5s infinite; border-radius:12px; }
         @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
-
-        .table { width:100%; }
-        .thead, .trow { display:grid; grid-template-columns: 1.2fr .9fr .9fr .9fr .8fr .8fr .7fr 1fr; gap:10px; padding:10px; border-bottom:1px solid #1a1a1a; }
-        .thead { font-weight:600; background:#0e0e0e; border-radius:10px; }
-        .rowset { border:1px solid #1a1a1a; border-radius:12px; margin-top:10px; overflow:hidden; }
-        .items { background:#0b0b0b; padding:8px; }
-        .sub { grid-template-columns: 1.6fr .5fr .6fr .6fr; }
-        .actions { display:flex; gap:8px; }
-        .empty { padding:12px; border:1px dashed #2a2a2a; border-radius:12px; text-align:center; opacity:.85; }
+        .tbl { width:100%; border-collapse:collapse; min-width:980px; }
+        .tbl th, .tbl td { padding:8px 10px; border-bottom:1px solid #1a1a1a; text-align:left; }
+        .badge { padding:2px 8px; border-radius:999px; border:1px solid #333; font-size:.8rem; text-transform:lowercase; }
+        .badge.paid { background:#102012; color:#c6f6d5; border-color:#1f3f26; }
+        .badge.created { background:#111127; color:#cdd6ff; border-color:#23234a; }
+        .badge.canceled { background:#2a1717; color:#f8b4b4; border-color:#422; }
       `}</style>
     </div>
   );
-}
-
-function toLocal(iso) {
-  // ISO -> input datetime-local (sin zona)
-  const d = new Date(iso);
-  const pad = (n) => `${n}`.padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function fromLocal(localStr) {
-  // datetime-local -> ISO
-  return new Date(localStr).toISOString();
 }
