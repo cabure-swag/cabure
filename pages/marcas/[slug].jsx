@@ -268,7 +268,6 @@ export default function BrandPage() {
   );
 }
 
-import React, { useState } from "react";
 function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
@@ -334,7 +333,7 @@ function ProductCard({ p, onAdd, onZoom }) {
         .price { font-weight:700; }
         .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
         .btn--primary {
-          background: #2563eb; /* azul */
+          background: #2563eb;
           border-color: #1e3a8a;
         }
         .btn--primary:hover { filter: brightness(1.05); }
