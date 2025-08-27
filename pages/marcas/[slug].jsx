@@ -5,6 +5,7 @@ import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { addToCart } from "@/utils/cart";
 import CartSidebar from "@/components/CartSidebar";
+import Lightbox from "@/components/Lightbox";
 import { pluralizeEs, normalizeImages } from "@/utils/formatters";
 
 export default function BrandPage() {
@@ -17,41 +18,48 @@ export default function BrandPage() {
   const [q, setQ] = useState("");
   const [activeCat, setActiveCat] = useState("Todas");
 
+  // Estado para lightbox global (abrimos con la galería del producto clickeado)
+  const [lbOpen, setLbOpen] = useState(false);
+  const [lbImages, setLbImages] = useState([]);
+  const [lbIndex, setLbIndex] = useState(0);
+
   useEffect(() => {
     if (!slug) return;
     (async () => {
       setLoading(true);
 
       // 1) Marca
-      const { data: b, error: eb } = await supabase
+      const { data: b } = await supabase
         .from("brands")
         .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at")
         .eq("slug", slug)
         .maybeSingle();
-      if (eb) console.error(eb);
       setBrand(b || null);
 
       // 2) Productos activos & no borrados
       let ps = [];
       if (b?.id) {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from("products")
           .select("id, name, price, image_url, images, category, subcategory, active, deleted_at")
           .eq("brand_id", b.id)
           .eq("active", true)
           .is("deleted_at", null)
           .order("created_at", { ascending: false });
-        if (error) console.error(error);
         ps = data || [];
       }
 
-      const normalized = ps.map((p) => ({ ...p, images: normalizeImages(p) }));
+      const normalized = ps.map((p) => {
+        const imgs = normalizeImages(p).slice(0, 5); // máximo 5
+        return { ...p, images: imgs };
+      });
+
       setProducts(normalized);
       setLoading(false);
     })();
   }, [slug]);
 
-  // categorías únicas (pluralizadas para los chips)
+  // categorías únicas (pluralizadas para chips)
   const categoriesPlural = useMemo(() => {
     const cats = new Set();
     for (const p of products) {
@@ -61,7 +69,7 @@ export default function BrandPage() {
     return ["Todas", ...Array.from(cats)];
   }, [products]);
 
-  // filtrado por texto + categoría (compara usando la categoría singular original del producto)
+  // filtro
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     return products.filter((p) => {
@@ -72,8 +80,6 @@ export default function BrandPage() {
             .some((t) => String(t).toLowerCase().includes(term));
 
       if (activeCat === "Todas") return matchesText;
-
-      // Si el chip dice "Camperas", comparamos con la categoría singular del producto "Campera"
       const plural = pluralizeEs(p.category || "");
       const matchesCat = plural === activeCat;
       return matchesText && matchesCat;
@@ -84,6 +90,16 @@ export default function BrandPage() {
     if (!brand?.slug) return;
     addToCart(brand.slug, p, 1);
   }
+
+  // Abre lightbox con imágenes del producto
+  function openLightbox(images = [], start = 0) {
+    if (!images.length) return;
+    setLbImages(images);
+    setLbIndex(Math.max(0, Math.min(start, images.length - 1)));
+    setLbOpen(true);
+  }
+  const lbPrev = () => setLbIndex((i) => (i <= 0 ? lbImages.length - 1 : i - 1));
+  const lbNext = () => setLbIndex((i) => (i >= lbImages.length - 1 ? 0 : i + 1));
 
   return (
     <div className="container">
@@ -104,6 +120,7 @@ export default function BrandPage() {
       <header className="profile">
         <div className="profile__left">
           <div className="logoWrap">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             {brand?.logo_url ? (
               <img src={brand.logo_url} alt={brand?.name || "Logo"} />
             ) : (
@@ -126,7 +143,7 @@ export default function BrandPage() {
                 aria-label="Instagram"
                 title="Instagram"
               >
-                {/* Nuevo ícono (simple, sin rellenos pesados) */}
+                {/* Ícono limpio de Instagram */}
                 <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
                   <g fill="none" stroke="currentColor" strokeWidth="1.5">
                     <rect x="3" y="3" width="18" height="18" rx="5" />
@@ -182,36 +199,19 @@ export default function BrandPage() {
         ) : filtered.length === 0 ? (
           <div className="empty">No hay productos para mostrar.</div>
         ) : (
-          filtered.map((p) => (
-            <article key={p.id} className="card">
-              <div className="imgWrap">
-                {p.images && p.images[0] ? (
-                  <img src={p.images[0]} alt={p.name} />
-                ) : (
-                  <div className="imgPh">Sin imagen</div>
-                )}
-              </div>
-              <div className="meta">
-                <h3 className="title">{p.name}</h3>
-                {/* En la card: singular (subcategoria si existe, si no category) */}
-                {(p.subcategory || p.category) && (
-                  <div className="sub">{p.subcategory || p.category}</div>
-                )}
-                <div className="price">
-                  ${Number(p.price || 0).toLocaleString("es-AR")}
-                </div>
-                <button
-                  className="btn"
-                  onClick={() => handleAdd(p)}
-                  aria-label={`Agregar ${p.name} al carrito`}
-                >
-                  Agregar al carrito
-                </button>
-              </div>
-            </article>
-          ))
+          filtered.map((p) => <ProductCard key={p.id} p={p} onAdd={() => handleAdd(p)} onZoom={openLightbox} />)
         )}
       </div>
+
+      {/* Lightbox global */}
+      <Lightbox
+        open={lbOpen}
+        images={lbImages}
+        index={lbIndex}
+        onClose={() => setLbOpen(false)}
+        onPrev={lbPrev}
+        onNext={lbNext}
+      />
 
       <style jsx>{`
         .container { padding: 16px; }
@@ -234,18 +234,13 @@ export default function BrandPage() {
 
         .logoWrap {
           width: 100%;
-          aspect-ratio: 1 / 1;           /* cuadrada completa */
+          aspect-ratio: 1 / 1;
           border-radius: 12px;
           overflow: hidden;
           border: 1px solid #1a1a1a;
           background: #0a0a0a;
         }
-        .logoWrap img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-        }
+        .logoWrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .logoPh { display:flex; align-items:center; justify-content:center; width:100%; height:100%; color:#777; }
 
         .chip {
@@ -266,17 +261,6 @@ export default function BrandPage() {
         @media (max-width: 780px)  { .grid { grid-template-columns: repeat(2, 1fr); } }
         @media (max-width: 520px)  { .grid { grid-template-columns: 1fr; } }
 
-        .card { border:1px solid #1a1a1a; background:#0a0a0a; border-radius:14px; overflow:hidden; display:flex; flex-direction:column; }
-        .imgWrap { width:100%; aspect-ratio: 1 / 1; background:#0f0f0f; display:block; }
-        .imgWrap img { width:100%; height:100%; object-fit:cover; display:block; }
-        .imgPh { width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#666; }
-
-        .meta { padding:10px; display:flex; flex-direction:column; gap:6px; }
-        .title { margin:0; font-size:16px; }
-        .sub { font-size:12px; opacity:.8; }
-        .price { font-weight:700; }
-        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
-
         .empty {
           grid-column: 1 / -1;
           padding: 16px;
@@ -291,5 +275,86 @@ export default function BrandPage() {
         @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
       `}</style>
     </div>
+  );
+}
+
+/** Card de producto con carrusel (hasta 5 imágenes) */
+function ProductCard({ p, onAdd, onZoom }) {
+  const [idx, setIdx] = useState(0);
+  const images = (p.images || []).slice(0, 5);
+  const src = images[idx] || images[0] || "";
+
+  const prev = (e) => {
+    e.stopPropagation();
+    if (!images.length) return;
+    setIdx((i) => (i <= 0 ? images.length - 1 : i - 1));
+  };
+  const next = (e) => {
+    e.stopPropagation();
+    if (!images.length) return;
+    setIdx((i) => (i >= images.length - 1 ? 0 : i + 1));
+  };
+
+  return (
+    <article className="card">
+      <div className="imgWrap" onClick={() => onZoom?.(images, idx)} title="Ver en grande">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        {src ? <img src={src} alt={p.name} /> : <div className="imgPh">Sin imagen</div>}
+
+        {images.length > 1 && (
+          <>
+            <button className="nav left" onClick={prev} aria-label="Anterior">‹</button>
+            <button className="nav right" onClick={next} aria-label="Siguiente">›</button>
+            <div className="dots" aria-hidden="true">
+              {images.map((_, i) => (
+                <span
+                  key={i}
+                  className={`dot ${i === idx ? "on" : ""}`}
+                  onClick={(e) => { e.stopPropagation(); setIdx(i); }}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="meta">
+        <h3 className="title">{p.name}</h3>
+        {(p.subcategory || p.category) && (
+          <div className="sub">{p.subcategory || p.category}</div>
+        )}
+        <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
+        <button className="btn" onClick={onAdd} aria-label={`Agregar ${p.name} al carrito`}>
+          Agregar al carrito
+        </button>
+      </div>
+
+      <style jsx>{`
+        .card { border:1px solid #1a1a1a; background:#0a0a0a; border-radius:14px; overflow:hidden; display:flex; flex-direction:column; }
+        .imgWrap { position:relative; width:100%; aspect-ratio: 1 / 1; background:#0f0f0f; cursor: zoom-in; }
+        .imgWrap img { width:100%; height:100%; object-fit:cover; display:block; }
+        .imgPh { width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#666; }
+        .nav {
+          position: absolute; top: 50%; transform: translateY(-50%);
+          background: #151515aa; color: #fff;
+          border: 1px solid #2a2a2a; border-radius: 50%;
+          width: 34px; height: 34px; display:grid; place-items:center; cursor:pointer;
+        }
+        .left { left: 8px; }
+        .right { right: 8px; }
+        .dots {
+          position: absolute; bottom: 8px; left: 0; right: 0;
+          display:flex; justify-content:center; gap:6px;
+        }
+        .dot { width: 7px; height: 7px; border-radius: 50%; background: #666; cursor: pointer; }
+        .dot.on { background: #fff; }
+
+        .meta { padding:10px; display:flex; flex-direction:column; gap:6px; }
+        .title { margin:0; font-size:16px; }
+        .sub { font-size:12px; opacity:.8; }
+        .price { font-weight:700; }
+        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
+      `}</style>
+    </article>
   );
 }
