@@ -31,7 +31,7 @@ export default function BrandPage() {
       // Marca
       const { data: b } = await supabase
         .from("brands")
-        .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at")
+        .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at, bank_alias, bank_cbu")
         .eq("slug", slug)
         .maybeSingle();
       setBrand(b || null);
@@ -50,11 +50,11 @@ export default function BrandPage() {
         if (!error) ps = data || [];
       }
 
-      // Normaliza imágenes y stock (si stock_qty es null/undefined, por defecto 1)
+      // Normalización de imágenes y stock
       const normalized = ps.map((p) => {
         const imgs = normalizeImages(p, 5);
         let stock = Number(p?.stock_qty);
-        if (!Number.isFinite(stock)) stock = 1; // ⚠️ predeterminado 1 si no hay valor
+        if (!Number.isFinite(stock)) stock = 1; // default 1 si viene null/undefined
         stock = Math.max(0, stock);
         return { ...p, images: imgs, stock_qty: stock };
       });
@@ -280,7 +280,6 @@ export default function BrandPage() {
 }
 
 /** Tarjeta de producto con mini carrusel 1:1 y botón "Agregar" de color */
-import React, { useState } from "react";
 function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
