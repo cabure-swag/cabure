@@ -3,7 +3,7 @@ import Head from "next/head";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
-import { loadCart, clearCart, cartTotal } from "@/utils/cart";
+import { readCart, clearCart, totalCart } from "@/utils/cart";
 
 export default function CheckoutBrand() {
   const router = useRouter();
@@ -11,145 +11,102 @@ export default function CheckoutBrand() {
 
   const [session, setSession] = useState(null);
   const [brand, setBrand] = useState(null);
-  const [items, setItems] = useState([]);
-  const [shipping, setShipping] = useState({
-    full_name: "",
-    email: "",
-    phone: "",
-    postal_code: "",
-    address: "",
-    city: "",
-    province: "",
-  });
-  const [paymentMethod, setPaymentMethod] = useState("transfer"); // "mp" o "transfer"
+  const [cart, setCart] = useState({ items: [] });
+  const [shipping, setShipping] = useState({ nombre: "", dni: "", cp: "", direccion: "", ciudad: "", provincia: "" });
+  const [payMethod, setPayMethod] = useState("transferencia");
   const [submitting, setSubmitting] = useState(false);
 
-  // auth
+  // Cargar sesión
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription?.unsubscribe();
+    const { data: l } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => l.subscription.unsubscribe();
   }, []);
 
-  // cargar brand + carrito de esa brand
+  // Cargar brand + escuchar carrito
   useEffect(() => {
     if (!brandSlug) return;
     (async () => {
-      // Brand
       const { data: b } = await supabase
         .from("brands")
         .select("id, name, slug, bank_alias, bank_cbu, mp_access_token")
         .eq("slug", brandSlug)
-        .is("deleted_at", null)
         .maybeSingle();
       setBrand(b || null);
-
-      // Cart
-      const c = loadCart(brandSlug);
-      setItems(c.items);
     })();
+
+    // cargar y escuchar cambios en el carrito
+    const load = () => setCart(readCart(brandSlug));
+    load();
+    const onStorage = (e) => {
+      if (e.key === `cabure:cart:${brandSlug}`) load();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, [brandSlug]);
 
-  const total = useMemo(() => cartTotal(items), [items]);
-  const hasMP = !!brand?.mp_access_token;
+  const total = useMemo(() => totalCart(cart), [cart]);
 
-  async function createOrder() {
+  async function confirmOrder(e) {
+    e.preventDefault();
     if (!session?.user?.id) {
-      alert("Necesitás iniciar sesión.");
+      alert("Tenés que iniciar sesión para confirmar el pedido.");
       return;
     }
     if (!brand?.id) {
-      alert("Marca no encontrada.");
+      alert("Marca inválida.");
       return;
     }
-    if (!items.length) {
+    if (!cart.items.length) {
       alert("Tu carrito está vacío.");
       return;
     }
-    // Validaciones envío (correo argentino)
-    for (const [k, v] of Object.entries(shipping)) {
-      if (!String(v || "").trim()) {
-        alert("Completá todos los datos de envío.");
+
+    try {
+      setSubmitting(true);
+
+      // Revalidar productos actuales (precio y stock fresh)
+      const ids = cart.items.map((it) => it.id);
+      const { data: products } = await supabase
+        .from("products")
+        .select("id, price, stock_qty, brand_id, active, deleted_at")
+        .in("id", ids);
+
+      // Rebuild items para RPC (limita por stock actual)
+      const itemsForRpc = cart.items.map((it) => {
+        const match = products?.find((p) => p.id === it.id);
+        const unit = Number(match?.price ?? it.price ?? 0);
+        let qty = Number(it.qty || 0);
+        if (Number.isFinite(match?.stock_qty)) {
+          qty = Math.min(qty, Math.max(0, match.stock_qty));
+        }
+        return { product_id: it.id, qty, unit_price: unit };
+      }).filter(x => x.qty > 0);
+
+      if (!itemsForRpc.length) {
+        alert("Tu carrito quedó sin stock. Actualizá y probá de nuevo.");
+        setSubmitting(false);
         return;
       }
-    }
 
-    setSubmitting(true);
-    try {
-      // 1) Crear order
-      const { data: order, error: e1 } = await supabase
-        .from("orders")
-        .insert({
-          brand_id: brand.id,
-          buyer_id: session.user.id,
-          total,
-          status: "created",
-          payment_method: hasMP && paymentMethod === "mp" ? "mp" : "transfer",
-        })
-        .select("id")
-        .maybeSingle();
-      if (e1) throw e1;
-      if (!order?.id) throw new Error("No se pudo crear el pedido.");
+      // Llamar RPC transaccional
+      const { data: orderId, error } = await supabase.rpc("create_order_with_stock", {
+        p_brand_id: brand.id,
+        p_buyer_id: session.user.id,
+        p_payment_method: payMethod,
+        p_items: itemsForRpc
+      });
 
-      // 2) Insertar order_items
-      const orderItemsPayload = items.map((it) => ({
-        order_id: order.id,
-        product_id: it.id,
-        qty: it.qty,
-        unit_price: it.price,
-      }));
-      const { error: e2 } = await supabase.from("order_items").insert(orderItemsPayload);
-      if (e2) throw e2;
+      if (error) throw error;
 
-      // 3) Descontar stock (si existe columna stock_count)
-      // Intentar update silencioso; si no existe, no falla la orden
-      try {
-        for (const it of items) {
-          await supabase
-            .from("products")
-            .update({ stock_count: supabase.rpc ? undefined : undefined }) // placeholder para no romper
-            .eq("id", it.id);
-          // Mejor: si tienes stock_count, usá un RPC transaccional del lado de supabase
-        }
-      } catch {
-        // ignorar si no hay stock_count
-      }
+      // (Opcional) guardar envío como metadata en orders si tenés columnas
+      // await supabase.from('orders').update({ shipping_json: shipping }).eq('id', orderId);
 
-      // 4) Si MP está configurado y eligió MP → crear preferencia (serverless)
-      if (hasMP && paymentMethod === "mp") {
-        const res = await fetch("/api/mp/create-preference", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            brandSlug,
-            orderId: order.id,
-            items: items.map((i) => ({
-              title: i.name,
-              quantity: i.qty,
-              unit_price: Number(i.price),
-            })),
-          }),
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.init_point) {
-            clearCart(brandSlug);
-            window.location.href = json.init_point; // redirige a MP
-            return;
-          }
-        }
-        alert("No se pudo iniciar el pago con Mercado Pago. Probá con Transferencia.");
-      }
-
-      // 5) Si es transferencia → mostrar alias/cbu y abrir chat con vendedor (vendor chat)
       clearCart(brandSlug);
-      alert("Pedido creado. Te contactamos por chat para coordinar el pago/envío.");
-
-      // OPCIONAL: redirigir al chat de vendedor de esa marca (si ya tenés /vendor-chat o flujo similar)
-      // router.push(`/marcas/${brandSlug}?chat=1`);
-      router.push(`/marcas/${brandSlug}`);
-
+      alert("Pedido creado. Nos vamos al chat con el vendedor para coordinar.");
+      router.push(`/vendor-chat/${brand.slug}?order=${orderId}`); // ajustá si tu ruta de chat es otra
     } catch (err) {
+      console.error(err);
       alert(err.message || "No se pudo crear el pedido. Revisá que estés logueado y probá de nuevo.");
     } finally {
       setSubmitting(false);
@@ -158,95 +115,91 @@ export default function CheckoutBrand() {
 
   return (
     <div className="container">
-      <Head><title>Finalizar compra — {brandSlug}</title></Head>
-      <h1 style={{ marginBottom: 6 }}>Finalizar compra</h1>
-      <p style={{ opacity:.8, marginTop:0 }}>
-        Marca: <b>{brand?.name || brandSlug}</b>
-      </p>
+      <Head><title>Checkout — CABURE.STORE</title></Head>
 
-      <div className="grid">
-        <section className="card" style={{ padding:12 }}>
-          <h3 style={{ marginTop:0 }}>Datos de envío (Correo Argentino)</h3>
-          <div className="form">
-            <input className="inp" placeholder="Nombre completo"
-              value={shipping.full_name} onChange={e=>setShipping({...shipping, full_name:e.target.value})} />
-            <input className="inp" placeholder="Email"
-              value={shipping.email} onChange={e=>setShipping({...shipping, email:e.target.value})} />
-            <input className="inp" placeholder="Teléfono"
-              value={shipping.phone} onChange={e=>setShipping({...shipping, phone:e.target.value})} />
-            <input className="inp" placeholder="Código postal"
-              value={shipping.postal_code} onChange={e=>setShipping({...shipping, postal_code:e.target.value})} />
-            <input className="inp" placeholder="Dirección"
-              value={shipping.address} onChange={e=>setShipping({...shipping, address:e.target.value})} />
-            <input className="inp" placeholder="Ciudad"
-              value={shipping.city} onChange={e=>setShipping({...shipping, city:e.target.value})} />
-            <input className="inp" placeholder="Provincia"
-              value={shipping.province} onChange={e=>setShipping({...shipping, province:e.target.value})} />
-          </div>
+      <h1>Finalizar compra</h1>
 
-          <h3>Método de pago</h3>
-          <div className="row" style={{ gap:12, flexWrap:"wrap" }}>
-            {hasMP && (
-              <label className="radio">
-                <input type="radio" name="pay" checked={paymentMethod==="mp"} onChange={()=>setPaymentMethod("mp")} />
-                Mercado Pago (Tarjeta/QR)
+      {!cart.items.length ? (
+        <p>Tu carrito está vacío.</p>
+      ) : (
+        <form onSubmit={confirmOrder} className="grid">
+          <section className="card">
+            <h2>Datos de envío (Correo Argentino)</h2>
+            <div className="grid2">
+              <label>Nombre y Apellido
+                <input required value={shipping.nombre} onChange={e=>setShipping({...shipping, nombre:e.target.value})} />
               </label>
-            )}
-            <label className="radio">
-              <input type="radio" name="pay" checked={paymentMethod==="transfer"} onChange={()=>setPaymentMethod("transfer")} />
-              Transferencia
-            </label>
-          </div>
-
-          {paymentMethod==="transfer" && (
-            <div className="hint">
-              <div>Alias: <b>{brand?.bank_alias || "—"}</b></div>
-              <div>CBU: <b>{brand?.bank_cbu || "—"}</b></div>
-              <small>Luego de confirmar, abriremos un chat para coordinar.</small>
+              <label>DNI
+                <input required value={shipping.dni} onChange={e=>setShipping({...shipping, dni:e.target.value})} />
+              </label>
+              <label>Código Postal
+                <input required value={shipping.cp} onChange={e=>setShipping({...shipping, cp:e.target.value})} />
+              </label>
+              <label>Dirección
+                <input required value={shipping.direccion} onChange={e=>setShipping({...shipping, direccion:e.target.value})} />
+              </label>
+              <label>Ciudad
+                <input required value={shipping.ciudad} onChange={e=>setShipping({...shipping, ciudad:e.target.value})} />
+              </label>
+              <label>Provincia
+                <input required value={shipping.provincia} onChange={e=>setShipping({...shipping, provincia:e.target.value})} />
+              </label>
             </div>
-          )}
+          </section>
 
-          <button className="btn primary" onClick={createOrder} disabled={submitting}>
-            {submitting ? "Confirmando…" : "Confirmar pedido"}
-          </button>
-        </section>
-
-        <section className="card" style={{ padding:12 }}>
-          <h3 style={{ marginTop:0 }}>Resumen</h3>
-          {items.length === 0 ? (
-            <div className="empty">Tu carrito está vacío.</div>
-          ) : (
+          <aside className="card">
+            <h2>Resumen</h2>
             <ul className="list">
-              {items.map(it => (
-                <li key={it.id} className="row" style={{ justifyContent:"space-between" }}>
+              {cart.items.map(it => (
+                <li key={it.id} className="row">
                   <span>{it.name} × {it.qty}</span>
-                  <span>${(Number(it.price)*it.qty).toLocaleString("es-AR")}</span>
+                  <span>${(Number(it.price)*Number(it.qty)).toLocaleString("es-AR")}</span>
                 </li>
               ))}
+              <li className="row" style={{ borderTop:"1px solid #222", paddingTop:8, marginTop:8, fontWeight:700 }}>
+                <span>Total</span>
+                <span>${total.toLocaleString("es-AR")}</span>
+              </li>
             </ul>
-          )}
-          <div className="row" style={{ justifyContent:"space-between", marginTop:8, fontWeight:600 }}>
-            <span>Total</span>
-            <span>${total.toLocaleString("es-AR")}</span>
-          </div>
-        </section>
-      </div>
+
+            <div style={{ marginTop:12 }}>
+              <h3>Método de pago</h3>
+              <select value={payMethod} onChange={e=>setPayMethod(e.target.value)} className="inp">
+                {brand?.mp_access_token && <option value="mercado_pago">Mercado Pago</option>}
+                <option value="transferencia">Transferencia</option>
+                <option value="otro">Otro</option>
+              </select>
+              {payMethod === "transferencia" && (
+                <p style={{ opacity:.85, marginTop:8 }}>
+                  Alias: <b>{brand?.bank_alias || "a definir"}</b><br/>
+                  CBU: <b>{brand?.bank_cbu || "a definir"}</b>
+                </p>
+              )}
+            </div>
+
+            <button type="submit" className="btn btn-primary" disabled={submitting}>
+              {submitting ? "Confirmando..." : "Confirmar pedido"}
+            </button>
+          </aside>
+        </form>
+      )}
 
       <style jsx>{`
         .container { padding:16px; }
-        .grid { display:grid; grid-template-columns: 1.2fr .8fr; gap:12px; }
+        .grid { display:grid; grid-template-columns: 1fr 380px; gap:16px; }
         @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
-        .card { border:1px solid #1a1a1a; background:#0a0a0a; border-radius:14px; }
-        .form { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px; }
-        @media (max-width: 700px) { .form { grid-template-columns: 1fr; } }
-        .inp { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; width:100%; }
-        .row { display:flex; align-items:center; }
-        .radio { display:flex; align-items:center; gap:8px; }
-        .hint { padding:10px; border:1px dashed #2a2a2a; border-radius:10px; margin:8px 0 12px; }
-        .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
-        .btn.primary { background:#1a1f2f; border-color:#2a375a; }
-        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; }
-        .list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+        .card { border:1px solid #1d1d1d; border-radius:14px; padding:14px; background:#0c0c0c; }
+        h1, h2 { margin:6px 0 12px; }
+        label { display:flex; flex-direction:column; gap:6px; }
+        .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+        @media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+        .inp, input, select { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff; width:100%; }
+        .row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .list { list-style:none; padding:0; margin:0 0 12px; display:flex; flex-direction:column; gap:6px; }
+        .btn { padding:10px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#151515; color:#fff; cursor:pointer; width:100%; }
+        .btn[disabled] { opacity:.6; cursor:not-allowed; }
+        .btn-primary { background:#2b5cff; border-color:#2b5cff; font-weight:700; }
+        .btn-primary:hover { filter:brightness(1.12); }
       `}</style>
     </div>
   );
