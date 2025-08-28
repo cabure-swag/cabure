@@ -30,7 +30,7 @@ export default function BrandPage() {
 
       const { data: b } = await supabase
         .from("brands")
-        .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at")
+        .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at, bank_alias, bank_cbu")
         .eq("slug", slug)
         .maybeSingle();
       setBrand(b || null);
@@ -39,7 +39,7 @@ export default function BrandPage() {
       if (b?.id) {
         const { data } = await supabase
           .from("products")
-          .select("id, name, price, image_url, images, category, subcategory, active, deleted_at")
+          .select("id, name, price, image_url, images, category, subcategory, active, deleted_at, stock_qty")
           .eq("brand_id", b.id)
           .eq("active", true)
           .is("deleted_at", null)
@@ -78,7 +78,9 @@ export default function BrandPage() {
 
   function handleAdd(p) {
     if (!brand?.slug) return;
-    addToCart(brand.slug, p, 1);
+    const max = Number.isFinite(p.stock_qty) ? Math.max(0, p.stock_qty) : Infinity;
+    if (max <= 0) return; // sin stock
+    addToCart(brand.slug, p, 1, max);
   }
 
   function openLightbox(images = [], start = 0) {
@@ -194,14 +196,7 @@ export default function BrandPage() {
       </div>
 
       {/* Lightbox */}
-      <Lightbox
-        open={lbOpen}
-        images={lbImages}
-        index={lbIndex}
-        onClose={() => setLbOpen(false)}
-        onPrev={lbPrev}
-        onNext={lbNext}
-      />
+      <Lightbox open={lbOpen} images={lbImages} index={lbIndex} onClose={() => setLbOpen(false)} onPrev={lbPrev} onNext={lbNext} />
 
       <style jsx>{`
         .container { padding: 16px; }
@@ -260,7 +255,7 @@ export default function BrandPage() {
         }
 
         .ph { width:100%; height:0; padding-bottom:100%; background:linear-gradient(90deg,#0f0f0f,#151515,#0f0f0f); animation:pulse 1.4s infinite; }
-        .ph-line { height:12px; padding:0; border-radius:8px; margin-top:8px; }
+        .ph-line { height:12px; padding:0; border-radius:8px; margin-top:8px; background:#141414; }
         .ph-line.small { width:60%; }
         @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
       `}</style>
@@ -268,76 +263,66 @@ export default function BrandPage() {
   );
 }
 
+import React, { useState } from "react";
 function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
-  const src = images[idx] || images[0] || "";
+  const current = images[idx] || p.image_url || "";
 
-  const prev = (e) => { e.stopPropagation(); if (!images.length) return; setIdx((i) => (i <= 0 ? images.length - 1 : i - 1)); };
-  const next = (e) => { e.stopPropagation(); if (!images.length) return; setIdx((i) => (i >= images.length - 1 ? 0 : i + 1)); };
+  const hasStockNum = Number.isFinite(p.stock_qty);
+  const outOfStock = hasStockNum ? p.stock_qty <= 0 : false;
 
   return (
     <article className="card">
-      <div className="imgWrap" onClick={() => onZoom?.(images, idx)} title="Ver en grande">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        {src ? <img src={src} alt={p.name} /> : <div className="imgPh">Sin imagen</div>}
-
-        {images.length > 1 && (
-          <>
-            <button className="nav left" onClick={prev} aria-label="Anterior">‹</button>
-            <button className="nav right" onClick={next} aria-label="Siguiente">›</button>
-            <div className="dots" aria-hidden="true">
-              {images.map((_, i) => (
-                <span
-                  key={i}
-                  className={`dot ${i === idx ? "on" : ""}`}
-                  onClick={(e) => { e.stopPropagation(); setIdx(i); }}
-                />
-              ))}
-            </div>
-          </>
-        )}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <div className="imgWrap" onClick={() => onZoom(images.length ? images : [current], idx)} role="button" aria-label="Ver imágenes">
+        {current ? <img src={current} alt={p.name} /> : <div className="imgPh">Sin imagen</div>}
       </div>
 
+      {images.length > 1 && (
+        <div className="thumbs">
+          {images.map((u, i) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img key={i} src={u} alt="" className={`th ${i === idx ? "th--active" : ""}`} onClick={() => setIdx(i)} />
+          ))}
+        </div>
+      )}
+
       <div className="meta">
-        <h3 className="title">{p.name}</h3>
-        {(p.subcategory || p.category) && (
-          <div className="sub">{p.subcategory || p.category}</div>
-        )}
-        <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
-        <button className="btn btn--primary" onClick={onAdd} aria-label={`Agregar ${p.name} al carrito`}>
-          Agregar al carrito
-        </button>
+        <div className="name">{p.name}</div>
+        <div className="sub">{[p.category, p.subcategory].filter(Boolean).join(" · ")}</div>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
+          <button
+            className="btn btn-primary"
+            onClick={onAdd}
+            disabled={outOfStock}
+            aria-disabled={outOfStock}
+            title={outOfStock ? "Sin stock" : "Agregar al carrito"}
+          >
+            {outOfStock ? "Sin stock" : "Agregar"}
+          </button>
+        </div>
       </div>
 
       <style jsx>{`
-        .card { border:1px solid #1a1a1a; background:#0a0a0a; border-radius:14px; overflow:hidden; display:flex; flex-direction:column; }
-        .imgWrap { position:relative; width:100%; aspect-ratio: 1 / 1; background:#0f0f0f; cursor: zoom-in; }
+        .card { border:1px solid #1d1d1d; border-radius:14px; overflow:hidden; background:#0c0c0c; }
+        .imgWrap { width:100%; aspect-ratio:1/1; background:#0a0a0a; cursor: zoom-in; }
         .imgWrap img { width:100%; height:100%; object-fit:cover; display:block; }
-        .imgPh { width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#666; }
-        .nav {
-          position: absolute; top: 50%; transform: translateY(-50%);
-          background: #151515aa; color: #fff;
-          border: 1px solid #2a2a2a; border-radius: 50%;
-          width: 34px; height: 34px; display:grid; place-items:center; cursor:pointer;
-        }
-        .left { left: 8px; }
-        .right { right: 8px; }
-        .dots { position: absolute; bottom: 8px; left: 0; right: 0; display:flex; justify-content:center; gap:6px; }
-        .dot { width: 7px; height: 7px; border-radius: 50%; background: #666; cursor: pointer; }
-        .dot.on { background: #fff; }
+        .imgPh { width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#777; }
 
-        .meta { padding:10px; display:flex; flex-direction:column; gap:6px; }
-        .title { margin:0; font-size:16px; }
-        .sub { font-size:12px; opacity:.8; }
+        .thumbs { display:flex; gap:6px; padding:8px; overflow-x:auto; }
+        .th { width:48px; height:48px; object-fit:cover; border:1px solid #222; border-radius:8px; cursor:pointer; opacity:.85; }
+        .th--active { outline:2px solid #2b5cff; opacity:1; }
+
+        .meta { padding:10px; }
+        .name { font-weight:600; }
+        .sub { opacity:.75; font-size:.9rem; }
         .price { font-weight:700; }
-        .btn { padding:8px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; }
-        .btn--primary {
-          background: #2563eb;
-          border-color: #1e3a8a;
-        }
-        .btn--primary:hover { filter: brightness(1.05); }
-        .btn--primary:focus { outline: 2px solid #93c5fd; outline-offset: 2px; }
+        .btn { padding:8px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#151515; color:#fff; cursor:pointer; }
+        .btn[disabled] { opacity:.5; cursor:not-allowed; }
+        .btn-primary { background:#2b5cff; border-color:#2b5cff; }
+        .btn-primary:hover { filter:brightness(1.15); }
       `}</style>
     </article>
   );
