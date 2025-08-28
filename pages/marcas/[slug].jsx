@@ -41,7 +41,7 @@ export default function BrandPage() {
       if (b?.id) {
         const { data } = await supabase
           .from("products")
-          // 👇 incluimos posibles nombres alternativos de stock
+          // incluimos posibles nombres alternativos de stock
           .select("id, name, price, image_url, images, category, subcategory, active, deleted_at, stock_qty, stock")
           .eq("brand_id", b.id)
           .eq("active", true)
@@ -53,11 +53,10 @@ export default function BrandPage() {
       // Normalización de imágenes y stock (robusto)
       const normalized = ps.map((p) => {
         const imgs = normalizeImages(p, 5);
-
         // toma el primer valor disponible entre stock_qty y stock
         const raw = p?.stock_qty ?? p?.stock ?? 1;
-        // castea de forma segura (si viene string, null, etc.)
-        let stockNum = Number.parseInt(raw as any, 10);
+        // casteo seguro para .jsx (sin TypeScript)
+        let stockNum = Number.parseInt(String(raw), 10);
         if (!Number.isFinite(stockNum) || Number.isNaN(stockNum)) stockNum = 1;
         stockNum = Math.max(0, stockNum);
 
@@ -203,7 +202,7 @@ export default function BrandPage() {
             </div>
           ))
         ) : filtered.length === 0 ? (
-          <div className="empty">No hay productos para mostrar。</div>
+          <div className="empty">No hay productos para mostrar.</div>
         ) : (
           filtered.map((p) => (
             <ProductCard key={p.id} p={p} onAdd={() => handleAdd(p)} onZoom={openLightbox} />
@@ -289,7 +288,8 @@ function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
   const current = images[idx] || "";
-  const hasStock = Math.max(0, Number.parseInt((p?.stock_qty ?? 0) as any, 10) || 0) > 0;
+  const hasStock =
+    Math.max(0, Number.parseInt(String(p?.stock_qty ?? 0), 10) || 0) > 0;
 
   const prev = (e) => { e.stopPropagation(); setIdx((i) => (i <= 0 ? images.length - 1 : i - 1)); };
   const next = (e) => { e.stopPropagation(); setIdx((i) => (i >= images.length - 1 ? 0 : i + 1)); };
