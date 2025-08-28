@@ -30,7 +30,9 @@ export default function BrandPage() {
 
       const { data: b } = await supabase
         .from("brands")
-        .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at, bank_alias, bank_cbu")
+        .select(
+          "id, name, slug, description, logo_url, color, instagram_url, active, deleted_at, bank_alias, bank_cbu"
+        )
         .eq("slug", slug)
         .maybeSingle();
       setBrand(b || null);
@@ -39,7 +41,9 @@ export default function BrandPage() {
       if (b?.id) {
         const { data } = await supabase
           .from("products")
-          .select("id, name, price, image_url, images, category, subcategory, active, deleted_at, stock_qty")
+          .select(
+            "id, name, price, image_url, images, category, subcategory, active, deleted_at, stock_qty"
+          )
           .eq("brand_id", b.id)
           .eq("active", true)
           .is("deleted_at", null)
@@ -47,7 +51,10 @@ export default function BrandPage() {
         ps = data || [];
       }
 
-      const normalized = ps.map((p) => ({ ...p, images: normalizeImages(p).slice(0, 5) }));
+      const normalized = ps.map((p) => ({
+        ...p,
+        images: normalizeImages(p).slice(0, 5),
+      }));
       setProducts(normalized);
       setLoading(false);
     })();
@@ -95,9 +102,13 @@ export default function BrandPage() {
   return (
     <div className="container">
       <Head>
-        <title>{brand?.name ? `${brand.name} — CABURE.STORE` : "Marca — CABURE.STORE"}</title>
+        <title>
+          {brand?.name ? `${brand.name} — CABURE.STORE` : "Marca — CABURE.STORE"}
+        </title>
         <meta name="description" content={brand?.description || "Catálogo"} />
-        {brand?.slug && <link rel="canonical" href={`https://cabure.store/marcas/${brand.slug}`} />}
+        {brand?.slug && (
+          <link rel="canonical" href={`https://cabure.store/marcas/${brand.slug}`} />
+        )}
         {brand?.name && (
           <>
             <meta property="og:title" content={`${brand.name} — CABURE.STORE`} />
@@ -122,7 +133,9 @@ export default function BrandPage() {
 
         <div className="profile__center">
           <h1 style={{ margin: 0 }}>{brand?.name || "Marca"}</h1>
-          {brand?.description && <p style={{ opacity: 0.85 }}>{brand.description}</p>}
+          {brand?.description && (
+            <p style={{ opacity: 0.85 }}>{brand.description}</p>
+          )}
 
           <div className="row" style={{ gap: 8 }}>
             {brand?.instagram_url && (
@@ -190,13 +203,25 @@ export default function BrandPage() {
           <div className="empty">No hay productos para mostrar.</div>
         ) : (
           filtered.map((p) => (
-            <ProductCard key={p.id} p={p} onAdd={() => handleAdd(p)} onZoom={openLightbox} />
+            <ProductCard
+              key={p.id}
+              p={p}
+              onAdd={() => handleAdd(p)}
+              onZoom={openLightbox}
+            />
           ))
         )}
       </div>
 
       {/* Lightbox */}
-      <Lightbox open={lbOpen} images={lbImages} index={lbIndex} onClose={() => setLbOpen(false)} onPrev={lbPrev} onNext={lbNext} />
+      <Lightbox
+        open={lbOpen}
+        images={lbImages}
+        index={lbIndex}
+        onClose={() => setLbOpen(false)}
+        onPrev={lbPrev}
+        onNext={lbNext}
+      />
 
       <style jsx>{`
         .container { padding: 16px; }
@@ -263,7 +288,6 @@ export default function BrandPage() {
   );
 }
 
-import React, { useState } from "react";
 function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
@@ -275,7 +299,12 @@ function ProductCard({ p, onAdd, onZoom }) {
   return (
     <article className="card">
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <div className="imgWrap" onClick={() => onZoom(images.length ? images : [current], idx)} role="button" aria-label="Ver imágenes">
+      <div
+        className="imgWrap"
+        onClick={() => onZoom(images.length ? images : [current], idx)}
+        role="button"
+        aria-label="Ver imágenes"
+      >
         {current ? <img src={current} alt={p.name} /> : <div className="imgPh">Sin imagen</div>}
       </div>
 
@@ -283,16 +312,29 @@ function ProductCard({ p, onAdd, onZoom }) {
         <div className="thumbs">
           {images.map((u, i) => (
             // eslint-disable-next-line @next/next/no-img-element
-            <img key={i} src={u} alt="" className={`th ${i === idx ? "th--active" : ""}`} onClick={() => setIdx(i)} />
+            <img
+              key={i}
+              src={u}
+              alt=""
+              className={`th ${i === idx ? "th--active" : ""}`}
+              onClick={() => setIdx(i)}
+            />
           ))}
         </div>
       )}
 
       <div className="meta">
         <div className="name">{p.name}</div>
-        <div className="sub">{[p.category, p.subcategory].filter(Boolean).join(" · ")}</div>
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-          <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
+        <div className="sub">
+          {[p.category, p.subcategory].filter(Boolean).join(" · ")}
+        </div>
+        <div
+          className="row"
+          style={{ justifyContent: "space-between", alignItems: "center", marginTop: 6 }}
+        >
+          <div className="price">
+            ${Number(p.price || 0).toLocaleString("es-AR")}
+          </div>
           <button
             className="btn btn-primary"
             onClick={onAdd}
