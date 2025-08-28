@@ -28,7 +28,7 @@ export default function BrandPage() {
     (async () => {
       setLoading(true);
 
-      // marca
+      // Marca
       const { data: b } = await supabase
         .from("brands")
         .select("id, name, slug, description, logo_url, color, instagram_url, active, deleted_at")
@@ -36,24 +36,29 @@ export default function BrandPage() {
         .maybeSingle();
       setBrand(b || null);
 
-      // productos activos y no borrados
+      // Productos activos y no borrados
       let ps = [];
       if (b?.id) {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("products")
           .select("id, name, price, image_url, images, category, subcategory, active, deleted_at, stock_qty")
           .eq("brand_id", b.id)
           .eq("active", true)
           .is("deleted_at", null)
           .order("created_at", { ascending: false });
-        ps = data || [];
+
+        if (!error) ps = data || [];
       }
 
-      // normaliza imágenes a URLs absolutas públicas
-      const normalized = ps.map((p) => ({
-        ...p,
-        images: normalizeImages(p, 5),
-      }));
+      // Normaliza imágenes y stock (si stock_qty es null/undefined, por defecto 1)
+      const normalized = ps.map((p) => {
+        const imgs = normalizeImages(p, 5);
+        let stock = Number(p?.stock_qty);
+        if (!Number.isFinite(stock)) stock = 1; // ⚠️ predeterminado 1 si no hay valor
+        stock = Math.max(0, stock);
+        return { ...p, images: imgs, stock_qty: stock };
+      });
+
       setProducts(normalized);
       setLoading(false);
     })();
@@ -84,8 +89,8 @@ export default function BrandPage() {
 
   function handleAdd(p) {
     if (!brand?.slug) return;
-    const max = Number.isFinite(p.stock_qty) ? Math.max(0, p.stock_qty) : Infinity;
-    if (max <= 0) return;
+    const max = Number.isFinite(p.stock_qty) ? Math.max(0, p.stock_qty) : 1;
+    if (max <= 0) return; // agotado
     addToCart(brand.slug, p, 1, max);
   }
 
@@ -275,10 +280,12 @@ export default function BrandPage() {
 }
 
 /** Tarjeta de producto con mini carrusel 1:1 y botón "Agregar" de color */
+import React, { useState } from "react";
 function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
   const current = images[idx] || "";
+  const hasStock = (Number(p?.stock_qty) || 0) > 0;
 
   const prev = (e) => { e.stopPropagation(); setIdx((i) => (i <= 0 ? images.length - 1 : i - 1)); };
   const next = (e) => { e.stopPropagation(); setIdx((i) => (i >= images.length - 1 ? 0 : i + 1)); };
@@ -303,8 +310,9 @@ function ProductCard({ p, onAdd, onZoom }) {
           {p.subcategory ? ` · ${p.subcategory}` : ""}
         </div>
         <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
-        <button className="btn btn-primary" onClick={onAdd} disabled={(p.stock_qty ?? 0) <= 0}>
-          {(p.stock_qty ?? 0) <= 0 ? "Sin stock" : "Agregar al carrito"}
+
+        <button className="btn btn-primary" onClick={onAdd} disabled={!hasStock}>
+          {hasStock ? "Agregar al carrito" : "Agotado"}
         </button>
       </div>
 
@@ -333,4 +341,3 @@ function ProductCard({ p, onAdd, onZoom }) {
     </article>
   );
 }
-
