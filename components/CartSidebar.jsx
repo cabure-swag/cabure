@@ -1,101 +1,138 @@
 // components/CartSidebar.jsx
-import React, { useEffect, useState } from "react";
-import Link from "next/link";
-import { loadCart, setQty, removeFromCart, cartTotal } from "@/utils/cart";
+import { useEffect, useMemo, useState } from "react";
+
+function readCart(brandSlug) {
+  if (typeof window === "undefined") return { items: [] };
+  try {
+    const raw = localStorage.getItem("cabure_cart") || "{}";
+    const all = JSON.parse(raw);
+    return all[brandSlug] || { items: [] };
+  } catch {
+    return { items: [] };
+  }
+}
+
+function writeCart(brandSlug, cart) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem("cabure_cart") || "{}";
+    const all = JSON.parse(raw || "{}");
+    all[brandSlug] = cart;
+    localStorage.setItem("cabure_cart", JSON.stringify(all));
+    window.dispatchEvent(new Event("cart:updated"));
+  } catch {}
+}
 
 export default function CartSidebar({ brandSlug }) {
-  const [items, setItems] = useState([]);
+  const [ready, setReady] = useState(false);
+  const [cart, setCart] = useState({ items: [] });
 
-  // Cargar al montar + actualizar cuando vuelva el foco
   useEffect(() => {
-    setItems(loadCart(brandSlug).items);
-
-    const onFocus = () => setItems(loadCart(brandSlug).items);
-    const onCartUpdate = (e) => {
-      if (e?.detail?.brandSlug === brandSlug) {
-        setItems(loadCart(brandSlug).items);
-      }
-    };
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("focus", onFocus);
-      window.addEventListener("cart:update", onCartUpdate);
-    }
-    return () => {
-      if (typeof window !== "undefined") {
-        window.removeEventListener("focus", onFocus);
-        window.removeEventListener("cart:update", onCartUpdate);
-      }
-    };
+    setReady(true);
+    setCart(readCart(brandSlug));
+    function onUpd() { setCart(readCart(brandSlug)); }
+    window.addEventListener("cart:updated", onUpd);
+    return () => window.removeEventListener("cart:updated", onUpd);
   }, [brandSlug]);
 
-  function changeQty(id, delta) {
-    const it = items.find((x) => x.id === id);
+  const total = useMemo(
+    () => (cart.items || []).reduce((acc, it) => acc + (Number(it.price) * Number(it.qty || 1)), 0),
+    [cart]
+  );
+
+  function inc(i) {
+    const c = readCart(brandSlug);
+    const it = c.items[i];
     if (!it) return;
-    const next = setQty(brandSlug, id, (it.qty || 1) + delta);
-    setItems(next);
+    const max = Number.isFinite(it.max) ? it.max : Infinity;
+    const next = Math.min((it.qty || 1) + 1, max);
+    it.qty = next;
+    writeCart(brandSlug, c);
+    setCart(c);
+  }
+  function dec(i) {
+    const c = readCart(brandSlug);
+    const it = c.items[i];
+    if (!it) return;
+    const next = Math.max((it.qty || 1) - 1, 1);
+    it.qty = next;
+    writeCart(brandSlug, c);
+    setCart(c);
+  }
+  function rm(i) {
+    const c = readCart(brandSlug);
+    c.items.splice(i, 1);
+    writeCart(brandSlug, c);
+    setCart(c);
+  }
+  function clear() {
+    writeCart(brandSlug, { items: [] });
+    setCart({ items: [] });
   }
 
-  function onRemove(id) {
-    const next = removeFromCart(brandSlug, id);
-    setItems(next);
-  }
-
-  const total = cartTotal(items);
+  if (!ready) return <div className="card" style={{ padding: 12 }}>Cargando…</div>;
 
   return (
-    <aside className="cart">
-      <div className="cart__head">
+    <aside className="card" style={{ padding: 12 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <h3 style={{ margin: 0 }}>Tu carrito</h3>
+        {(cart.items?.length || 0) > 0 && (
+          <button className="btn btn-ghost" onClick={clear}>Vaciar</button>
+        )}
       </div>
 
-      {items.length === 0 ? (
-        <div className="empty">Todavía no agregaste productos.</div>
+      {(cart.items?.length || 0) === 0 ? (
+        <p style={{ opacity: .8 }}>Todavía no agregaste productos.</p>
       ) : (
         <>
-          <ul className="cart__list">
-            {items.map((it) => (
-              <li key={it.id} className="cart__item">
-                <div className="cart__info">
+          <ul className="list">
+            {cart.items.map((it, i) => (
+              <li key={i} className="item">
+                <div className="left">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {it.image ? <img src={it.image} alt="" /> : <div className="ph" />}
+                </div>
+                <div className="mid">
                   <div className="name">{it.name}</div>
-                  <div className="price">
-                    ${Number(it.price).toLocaleString("es-AR")}
+                  <div className="sub">${Number(it.price).toLocaleString("es-AR")}</div>
+                  <div className="qty">
+                    <button onClick={() => dec(i)} aria-label="Menos">–</button>
+                    <span>{it.qty || 1}</span>
+                    <button onClick={() => inc(i)} aria-label="Más">+</button>
+                    {Number.isFinite(it.max) && <small style={{ marginLeft: 6, opacity: .7 }}>max {it.max}</small>}
                   </div>
                 </div>
-                <div className="cart__qty">
-                  <button className="btn ghost" onClick={() => changeQty(it.id, -1)} aria-label="Restar">-</button>
-                  <span className="q">{it.qty}</span>
-                  <button className="btn ghost" onClick={() => changeQty(it.id, +1)} aria-label="Sumar">+</button>
+                <div className="right">
+                  <button className="btn btn-ghost" onClick={() => rm(i)}>Quitar</button>
                 </div>
-                <button className="btn danger" onClick={() => onRemove(it.id)} aria-label="Quitar">Quitar</button>
               </li>
             ))}
           </ul>
 
-          <div className="cart__foot">
-            <div className="total">
-              Total: <b>${total.toLocaleString("es-AR")}</b>
-            </div>
-            <Link href={`/checkout/${brandSlug}`} className="btn primary" aria-label="Finalizar compra">
-              Finalizar compra
-            </Link>
+          <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
+            <strong>Total</strong>
+            <strong>${total.toLocaleString("es-AR")}</strong>
           </div>
+
+          <a className="btn btn-primary" href={`/checkout/${brandSlug}`} style={{ marginTop: 10 }}>
+            Finalizar compra
+          </a>
         </>
       )}
 
       <style jsx>{`
-        .cart { position: sticky; top: 84px; border:1px solid #1a1a1a; background:#0a0a0a; border-radius:14px; padding:12px; }
-        .cart__head { padding-bottom:8px; border-bottom:1px solid #161616; margin-bottom:8px; }
-        .empty { padding:14px; text-align:center; border:1px dashed #2a2a2a; border-radius:12px; }
-        .cart__list { display:flex; flex-direction:column; gap:8px; margin:0; padding:0; list-style:none; }
-        .cart__item { border:1px solid #1a1a1a; border-radius:12px; padding:8px; display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:center; }
-        .cart__info .name { font-weight:600; }
-        .cart__qty { display:flex; align-items:center; gap:6px; }
-        .cart__foot { border-top:1px solid #161616; margin-top:10px; padding-top:10px; display:flex; align-items:center; justify-content:space-between; }
-        .btn { padding:6px 10px; border-radius:10px; border:1px solid #2a2a2a; background:#161616; color:#fff; cursor:pointer; text-decoration:none; }
-        .btn.ghost { background:#0f0f0f; }
-        .btn.danger { background:#2a1616; border-color:#3a2323; }
-        .btn.primary { background:#1a1f2f; border-color:#2a375a; }
+        .row { display:flex; align-items:center; gap: 8px; }
+        .list { list-style:none; padding:0; margin:12px 0 0; display:flex; flex-direction:column; gap:10px; }
+        .item { display:grid; grid-template-columns: 56px 1fr auto; gap:10px; border:1px solid #1d1d1d; border-radius:10px; padding:8px; }
+        .left img, .ph { width:56px; height:56px; object-fit:cover; border-radius:8px; background:#0f0f0f; display:block; }
+        .name { font-weight:600; }
+        .sub { opacity:.8; }
+        .qty { display:flex; align-items:center; gap:6px; margin-top: 6px; }
+        .qty button { width:24px; height:24px; border-radius:6px; border:1px solid #2a2a2a; background:#121212; color:#fff; cursor:pointer; }
+        .btn { padding:8px 12px; border-radius:10px; border:1px solid #2a2a2a; background:#151515; color:#fff; cursor:pointer; }
+        .btn-ghost { background:transparent; }
+        .btn-primary { background:#2b5cff; border-color:#2b5cff; text-align:center; display:block; text-decoration:none; }
+        .btn-primary:hover { filter:brightness(1.15); }
       `}</style>
     </aside>
   );
