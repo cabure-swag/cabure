@@ -36,28 +36,25 @@ export default function BrandPage() {
         .maybeSingle();
       setBrand(b || null);
 
-      // Productos activos y no borrados
+      // Catálogo público: leer SIEMPRE de la vista pública para que coincida con el panel
+      // (la vista ya filtra active=true y deleted_at is null)
       let ps = [];
       if (b?.id) {
         const { data } = await supabase
-          .from("products")
-          // incluimos posibles nombres alternativos de stock
-          .select("id, name, price, image_url, images, category, subcategory, active, deleted_at, stock_qty, stock")
+          .from("public_brand_products")
+          .select("id, brand_id, name, price, image_url, images, category, subcategory, created_at, stock_qty")
           .eq("brand_id", b.id)
-          .eq("active", true)
-          .is("deleted_at", null)
           .order("created_at", { ascending: false });
         ps = data || [];
       }
 
-      // Normalización de imágenes y stock (robusto)
+      // Normalización de imágenes y stock_qty (a número)
       const normalized = ps.map((p) => {
+        // normalizeImages(p, max) está preparado para tomar { images, image_url }
         const imgs = normalizeImages(p, 5);
-        // toma el primer valor disponible entre stock_qty y stock
-        const raw = p?.stock_qty ?? p?.stock ?? 1;
-        // casteo seguro para .jsx (sin TypeScript)
-        let stockNum = Number.parseInt(String(raw), 10);
-        if (!Number.isFinite(stockNum) || Number.isNaN(stockNum)) stockNum = 1;
+
+        let stockNum = parseInt(String(p?.stock_qty ?? 0), 10);
+        if (!Number.isFinite(stockNum) || Number.isNaN(stockNum)) stockNum = 0;
         stockNum = Math.max(0, stockNum);
 
         return { ...p, images: imgs, stock_qty: stockNum };
@@ -93,8 +90,8 @@ export default function BrandPage() {
 
   function handleAdd(p) {
     if (!brand?.slug) return;
-    const max = Number.isFinite(p.stock_qty) ? Math.max(0, p.stock_qty) : 1;
-    if (max <= 0) return; // agotado
+    const max = Number.isFinite(p.stock_qty) ? Math.max(0, p.stock_qty) : 0;
+    if (max <= 0) return; // Agotado
     addToCart(brand.slug, p, 1, max);
   }
 
@@ -288,8 +285,7 @@ function ProductCard({ p, onAdd, onZoom }) {
   const [idx, setIdx] = useState(0);
   const images = (p.images || []).slice(0, 5);
   const current = images[idx] || "";
-  const hasStock =
-    Math.max(0, Number.parseInt(String(p?.stock_qty ?? 0), 10) || 0) > 0;
+  const hasStock = (parseInt(String(p?.stock_qty ?? 0), 10) || 0) > 0;
 
   const prev = (e) => { e.stopPropagation(); setIdx((i) => (i <= 0 ? images.length - 1 : i - 1)); };
   const next = (e) => { e.stopPropagation(); setIdx((i) => (i >= images.length - 1 ? 0 : i + 1)); };
@@ -313,7 +309,9 @@ function ProductCard({ p, onAdd, onZoom }) {
           {p.category ? String(p.category).trim() : "—"}
           {p.subcategory ? ` · ${p.subcategory}` : ""}
         </div>
-        <div className="price">${Number(p.price || 0).toLocaleString("es-AR")}</div>
+        <div className="price">
+          ${Number(p.price || 0).toLocaleString("es-AR")}
+        </div>
 
         <button className="btn btn-primary" onClick={onAdd} disabled={!hasStock}>
           {hasStock ? "Agregar al carrito" : "Agotado"}
