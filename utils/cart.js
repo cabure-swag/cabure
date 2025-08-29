@@ -1,167 +1,89 @@
 // utils/cart.js
-// Carrito por marca, con sincronización en tiempo real y límites de stock
+/**
+ * Carrito por marca:
+ * - Clave: cart:<brandSlug> en localStorage
+ * - Estructura de item: { id, name, price, qty, max, thumb }
+ * - "max" es el tope permitido (stock disponible)
+ */
 
-const KEY = (slug) => `cabure:cart:${slug}`;
+function key(slug) {
+  return `cart:${slug}`;
+}
 
-// --- Pub/Sub muy simple para notificar cambios en el carrito ---
-function notifyCart(brandSlug) {
-  if (typeof window === "undefined") return;
+export function readCart(slug) {
+  if (typeof window === "undefined") return [];
   try {
-    const ev = new CustomEvent("cart:update", { detail: { brandSlug } });
-    window.dispatchEvent(ev);
+    const raw = localStorage.getItem(key(slug));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeCart(slug, items) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(key(slug), JSON.stringify(items || []));
+  // Notificamos al resto de la app (misma pestaña y otras)
+  try {
+    window.dispatchEvent(new CustomEvent("cart:changed", { detail: { slug } }));
   } catch {}
 }
 
-// --- Lectura/escritura segura en localStorage ---
-function readCart(brandSlug) {
-  if (typeof window === "undefined") return { items: [] };
-  try {
-    const raw = window.localStorage.getItem(KEY(brandSlug));
-    if (!raw) return { items: [] };
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.items)) return { items: [] };
-    return { items: parsed.items };
-  } catch {
-    return { items: [] };
-  }
-}
-
-function writeCart(brandSlug, cart) {
-  if (typeof window === "undefined") return;
-  const safe = {
-    items: Array.isArray(cart?.items) ? cart.items : [],
-  };
-  window.localStorage.setItem(KEY(brandSlug), JSON.stringify(safe));
-  notifyCart(brandSlug);
-}
-
-// --- Normaliza un producto a la forma que guardamos en el carrito ---
-function normalizeProductForCart(p) {
-  const id = p?.id;
-  const name = p?.name ?? "";
-  const price = Number(p?.price ?? 0) || 0;
-  // usamos primera imagen disponible; en la UI ya resolvés el array
-  const image =
-    (Array.isArray(p?.images) && p.images[0]) ||
-    p?.image_url ||
-    null;
-
-  // Stock “duro” que limita cantidad por ítem
-  // Aceptamos p.stock_qty o p.stock; si no hay, por defecto 1 (pedido del proyecto).
-  let stockRaw = p?.stock_qty ?? p?.stock ?? 1;
-  let stock = parseInt(String(stockRaw), 10);
-  if (!Number.isFinite(stock) || Number.isNaN(stock)) stock = 1;
-  stock = Math.max(0, stock);
-
-  return { id, name, price, image, stock_qty: stock };
-}
-
-// --- API pública del carrito ---
-export function getCart(brandSlug) {
-  return readCart(brandSlug);
-}
-
-export function getCartSnapshot(brandSlug) {
-  // alias de lectura por si preferís otro nombre
-  return readCart(brandSlug);
-}
-
-export function getItemCount(brandSlug) {
-  const { items } = readCart(brandSlug);
-  return items.reduce((acc, it) => acc + (it.qty || 0), 0);
-}
-
-export function getCartTotal(brandSlug) {
-  const { items } = readCart(brandSlug);
-  return items.reduce((acc, it) => acc + (Number(it.price || 0) * (it.qty || 0)), 0);
-}
-
-export function clearCart(brandSlug) {
-  writeCart(brandSlug, { items: [] });
-}
-
-export function removeItem(brandSlug, productId) {
-  const { items } = readCart(brandSlug);
-  const next = items.filter((it) => it.id !== productId);
-  writeCart(brandSlug, { items: next });
-}
-
 /**
- * Agrega cantidad al carrito. Respeta límite máximo por ítem.
- * Firma compatible con usos anteriores:
- *   addToCart(slug, product, qty)
- *   addToCart(slug, product, qty, max)
+ * Agrega (o incrementa) un producto al carrito de una marca.
+ * - qty: cantidad a sumar (default 1)
+ * - max: tope de stock (Infinity si no se provee)
  */
-export function addToCart(brandSlug, product, qty = 1, maxFromCaller = null) {
-  if (!brandSlug || !product?.id) return;
-  const { items } = readCart(brandSlug);
+export function addToCart(slug, product, qty = 1, max) {
+  if (!slug || !product) return [];
 
-  const base = normalizeProductForCart(product);
+  const items = readCart(slug);
+  const id = String(product.id ?? "");
+  if (!id) return items;
 
-  // Máximo permitido (prioridad: parámetro > stock del producto > Infinity)
-  let hardMax = Number.isFinite(maxFromCaller) ? maxFromCaller : base.stock_qty;
-  if (!Number.isFinite(hardMax)) hardMax = Infinity;
-  hardMax = Math.max(0, hardMax);
+  const limit = Number.isFinite(max) ? Math.max(0, max) : Infinity;
+  const idx = items.findIndex((it) => String(it.id) === id);
 
-  const idx = items.findIndex((it) => it.id === base.id);
-  if (idx === -1) {
-    const newQty = Math.max(1, Math.min(qty, hardMax));
-    if (newQty <= 0) return;
-    items.push({ ...base, qty: newQty });
+  if (idx >= 0) {
+    const prev = items[idx];
+    const nextQty = Math.min((Number(prev.qty) || 1) + (Number(qty) || 1), limit);
+    items[idx] = { ...prev, qty: nextQty, max: limit };
   } else {
-    const current = items[idx];
-    const nextQty = Math.max(1, Math.min(Number(current.qty || 0) + Number(qty || 0), hardMax));
-    items[idx] = { ...current, ...base, qty: nextQty };
+    const name = product.name ?? "Producto";
+    const price = Number(product.price || 0);
+    const thumb =
+      (Array.isArray(product.images) && product.images[0]) ||
+      product.image_url ||
+      null;
+
+    const firstQty = Math.min(Number(qty) || 1, limit === Infinity ? (Number(qty) || 1) : limit);
+    items.push({ id, name, price, qty: firstQty, max: limit, thumb });
   }
 
-  writeCart(brandSlug, { items });
+  writeCart(slug, items);
+  return items;
 }
 
-export function updateQty(brandSlug, productId, qty, maxFromCaller = null) {
-  if (!brandSlug || !productId) return;
-  const { items } = readCart(brandSlug);
-  const idx = items.findIndex((it) => it.id === productId);
-  if (idx === -1) return;
+export function setQty(slug, productId, qty, max) {
+  const items = readCart(slug);
+  const idx = items.findIndex((it) => String(it.id) === String(productId));
+  if (idx < 0) return items;
 
-  const current = items[idx];
-  let hardMax = Number.isFinite(maxFromCaller) ? maxFromCaller : current?.stock_qty;
-  if (!Number.isFinite(hardMax)) hardMax = Infinity;
-  hardMax = Math.max(0, hardMax);
+  const limit = Number.isFinite(max) ? Math.max(0, max) : (Number.isFinite(items[idx].max) ? items[idx].max : Infinity);
+  const nextQty = Math.max(1, Math.min(Number(qty) || 1, limit));
+  items[idx] = { ...items[idx], qty: nextQty, max: limit };
 
-  let nextQty = parseInt(String(qty), 10);
-  if (!Number.isFinite(nextQty) || Number.isNaN(nextQty)) nextQty = 1;
-
-  if (nextQty <= 0) {
-    // si ponen 0 o menos, lo sacamos del carrito
-    items.splice(idx, 1);
-  } else {
-    nextQty = Math.min(nextQty, hardMax);
-    items[idx] = { ...current, qty: nextQty };
-  }
-
-  writeCart(brandSlug, { items });
+  writeCart(slug, items);
+  return items;
 }
 
-/**
- * Suscripción a cambios del carrito (UI en tiempo real)
- * - Notifica en cambios locales (CustomEvent)
- * - Notifica en cambios entre pestañas (event 'storage')
- * Devuelve función para desuscribir.
- */
-export function subscribeCart(brandSlug, callback) {
-  if (typeof window === "undefined") return () => {};
-  const onCustom = (ev) => {
-    if (ev?.detail?.brandSlug === brandSlug) callback(readCart(brandSlug));
-  };
-  const onStorage = (ev) => {
-    if (ev.key === KEY(brandSlug)) callback(readCart(brandSlug));
-  };
-  window.addEventListener("cart:update", onCustom);
-  window.addEventListener("storage", onStorage);
-  // notifica estado inicial
-  try { callback(readCart(brandSlug)); } catch {}
-  return () => {
-    window.removeEventListener("cart:update", onCustom);
-    window.removeEventListener("storage", onStorage);
-  };
+export function removeFromCart(slug, productId) {
+  const next = readCart(slug).filter((it) => String(it.id) !== String(productId));
+  writeCart(slug, next);
+  return next;
+}
+
+export function clearCart(slug) {
+  writeCart(slug, []);
+  return [];
 }
