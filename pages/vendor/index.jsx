@@ -1,18 +1,11 @@
 // pages/vendor/index.jsx
-/* Panel de Vendedor — CRUD catálogo + Chat de vendedores + Métricas
-   Requisitos previos (SQL ya compartido anteriormente):
-   - Tabla products con columnas: id, brand_id, name, price, active, stock int, image_url text, images text[], category text, subcategory text, deleted_at
-   - Tablas de chat de vendedores:
-     vendor_threads(id uuid pk, brand_id uuid fk, buyer_id uuid fk, status text default 'open', created_at, updated_at)
-     vendor_messages(id bigserial pk, thread_id uuid fk, sender_role text check in ('buyer','vendor','admin'), message text, created_at)
-   - Tablas de pedidos: orders, order_items (ya existentes)
-*/
+/* Panel de Vendedor — CRUD catálogo + Chat + Métricas */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
 import { supabase } from "@/lib/supabaseClient";
 
-// ---------- Utils ----------
+/* ---------- Utils ---------- */
 function toPublicURL(input) {
   if (!input) return null;
   const v = String(input).trim();
@@ -24,7 +17,6 @@ function toPublicURL(input) {
   if (clean.startsWith("product-images/") || clean.startsWith("brand-logos/")) {
     return `${base}/storage/v1/object/public/${clean}`;
   }
-  // por defecto asumimos product-images/
   return `${base}/storage/v1/object/public/product-images/${clean}`;
 }
 
@@ -54,13 +46,13 @@ function firstOfMonthISO() {
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
 }
 
-// ---------- Página ----------
+/* ---------- Página ---------- */
 export default function VendorPage() {
   // auth/profile
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
 
-  // marcas y selección
+  // marcas
   const [brands, setBrands] = useState([]);
   const [activeBrandId, setActiveBrandId] = useState("");
 
@@ -80,7 +72,7 @@ export default function VendorPage() {
   const [metrics, setMetrics] = useState({ totalOrders: 0, sumTotal: 0, list: [] });
   const [loadingMetrics, setLoadingMetrics] = useState(false);
 
-  // ---- Auth load ----
+  /* ---- Auth ---- */
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
@@ -99,7 +91,7 @@ export default function VendorPage() {
     })();
   }, [session?.user?.id]);
 
-  // ---- Cargar marcas (admin: todas / vendor: asignadas) ----
+  /* ---- Marcas asignadas ---- */
   useEffect(() => {
     if (!session?.user?.id) return;
     (async () => {
@@ -128,14 +120,14 @@ export default function VendorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id, profile?.role]);
 
-  // ---- Cargar productos de la marca seleccionada ----
+  /* ---- Productos de la marca ---- */
   useEffect(() => {
     if (!activeBrandId) return;
     (async () => {
       setLoadingProducts(true);
       const { data, error } = await supabase
         .from("products")
-        .select("id,brand_id,name,price,active,stock,image_url,images,category,subcategory,deleted_at,created_at")
+        .select("id,brand_id,name,price,active,stock_qty,image_url,images,category,subcategory,deleted_at,created_at")
         .eq("brand_id", activeBrandId)
         .is("deleted_at", null)
         .order("created_at", { ascending: false });
@@ -151,7 +143,7 @@ export default function VendorPage() {
     })();
   }, [activeBrandId]);
 
-  // ---- CRUD helpers de producto ----
+  /* ---- CRUD producto ---- */
   async function updateProductField(productId, patch) {
     const { error } = await supabase.from("products").update(patch).eq("id", productId);
     if (error) throw error;
@@ -166,7 +158,7 @@ export default function VendorPage() {
   async function handleUploadImage(p, file) {
     if (!file || !p?.id || !activeBrandId) return;
     const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-    const rel = `${activeBrandId}/${p.id}/${Date.now()}.${ext}`; // ruta dentro del bucket
+    const rel = `${activeBrandId}/${p.id}/${Date.now()}.${ext}`;
     const { error: upErr } = await supabase.storage.from("product-images").upload(rel, file, {
       upsert: false,
       cacheControl: "3600",
@@ -195,13 +187,11 @@ export default function VendorPage() {
     setProducts((prev) => prev.map((it) => (it.id === p.id ? { ...it, _imagesRaw: nextArr } : it)));
   }
 
-  // ---------- CHAT DE VENDEDORES ----------
-  // Lista de hilos
+  /* ---------- CHAT ---------- */
   useEffect(() => {
     if (!activeBrandId) return;
     (async () => {
       setLoadingThreads(true);
-      // trae los hilos de la marca; el admin también puede verlos
       const { data, error } = await supabase
         .from("vendor_threads")
         .select("id, brand_id, buyer_id, status, created_at, updated_at")
@@ -212,7 +202,6 @@ export default function VendorPage() {
     })();
   }, [activeBrandId]);
 
-  // Mensajes del hilo abierto
   useEffect(() => {
     if (!openThreadId) { setMessages([]); return; }
     let channel = null;
@@ -223,17 +212,13 @@ export default function VendorPage() {
         .eq("thread_id", openThreadId)
         .order("created_at", { ascending: true });
       if (!error) setMessages(data || []);
-
-      // Realtime si está habilitado
       try {
         channel = supabase
           .channel(`vm_${openThreadId}`)
           .on(
             "postgres_changes",
             { event: "INSERT", schema: "public", table: "vendor_messages", filter: `thread_id=eq.${openThreadId}` },
-            (payload) => {
-              setMessages((prev) => [...prev, payload.new]);
-            }
+            (payload) => setMessages((prev) => [...prev, payload.new])
           )
           .subscribe();
       } catch {}
@@ -250,9 +235,7 @@ export default function VendorPage() {
       .from("vendor_messages")
       .insert({ thread_id: openThreadId, sender_role: role, message: txt });
     setSendingMsg(false);
-    if (!error) {
-      msgRef.current.value = "";
-    }
+    if (!error) msgRef.current.value = "";
   }
 
   async function closeThread(id) {
@@ -260,13 +243,12 @@ export default function VendorPage() {
     setThreads((t) => t.map((x) => (x.id === id ? { ...x, status: "closed" } : x)));
   }
 
-  // ---------- MÉTRICAS ----------
+  /* ---------- MÉTRICAS ---------- */
   useEffect(() => {
     if (!activeBrandId) return;
     (async () => {
       setLoadingMetrics(true);
       const from = firstOfMonthISO();
-      // KPIs del mes actual
       const { data: orders, error } = await supabase
         .from("orders")
         .select("id, total, status, payment_method, created_at, buyer_id")
@@ -281,7 +263,6 @@ export default function VendorPage() {
     })();
   }, [activeBrandId]);
 
-  // ---------- UI ----------
   const isAdmin = profile?.role === "admin";
 
   return (
@@ -316,6 +297,7 @@ export default function VendorPage() {
             {products.map((p) => (
               <div key={p.id} className="pCard">
                 <div className="thumb">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={toPublicURL((p._imagesRaw && p._imagesRaw[0]) || p.image_url) || "/placeholder.png"}
                     alt={p.name || "producto"}
@@ -351,7 +333,7 @@ export default function VendorPage() {
                   />
                 </div>
 
-                {/* Stock */}
+                {/* Stock (usa stock_qty) */}
                 <div className="row g6">
                   <label className="lab">Stock</label>
                   <input
@@ -359,10 +341,12 @@ export default function VendorPage() {
                     type="number"
                     min="0"
                     step="1"
-                    defaultValue={typeof p.stock === "number" ? p.stock : 1}
+                    defaultValue={Number.isFinite(p.stock_qty) ? p.stock_qty : 1}
                     onBlur={async (e) => {
-                      const val = Math.max(0, parseInt(e.target.value || "0", 10));
-                      if (val !== p.stock) await updateProductField(p.id, { stock: val });
+                      let val = parseInt(e.target.value || "0", 10);
+                      if (!Number.isFinite(val) || Number.isNaN(val)) val = 0;
+                      val = Math.max(0, val);
+                      if (val !== p.stock_qty) await updateProductField(p.id, { stock_qty: val });
                     }}
                   />
                 </div>
@@ -417,6 +401,7 @@ export default function VendorPage() {
                   <div className="thumbs">
                     {(p._imagesRaw || []).slice(0, 5).map((img) => (
                       <div key={img} className="mini">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={toPublicURL(img)} alt="product" />
                         <button className="del" title="Eliminar" onClick={() => handleRemoveImage(p, img)}>✕</button>
                       </div>
@@ -429,7 +414,7 @@ export default function VendorPage() {
         )}
       </section>
 
-      {/* Chat de vendedores */}
+      {/* Chat */}
       <section className="card" style={{ padding: 16, marginBottom: 12 }}>
         <div className="row" style={{ alignItems: "center", gap: 8 }}>
           <h2 style={{ margin: 0 }}>Chats con clientes</h2>
@@ -545,7 +530,6 @@ export default function VendorPage() {
         @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
         .empty { padding:12px; border:1px dashed #2a2a2a; border-radius:12px; text-align:center; opacity:.9; }
 
-        /* Grid de productos */
         .grid { display:grid; gap:16px; grid-template-columns: repeat(3, 1fr); }
         @media (max-width: 1100px){ .grid { grid-template-columns: repeat(2, 1fr); } }
         @media (max-width: 640px){ .grid { grid-template-columns: 1fr; } }
@@ -566,7 +550,6 @@ export default function VendorPage() {
 
         .hint { opacity:.7; }
 
-        /* Threads */
         .threads { display:grid; grid-template-columns: 280px 1fr; gap:12px; margin-top:8px; }
         @media (max-width: 900px){ .threads { grid-template-columns: 1fr; } }
 
@@ -589,7 +572,6 @@ export default function VendorPage() {
         .time { font-size:.75rem; opacity:.6; margin-top:4px; }
         .sendrow { display:flex; gap:8px; align-items:center; margin-top:8px; }
 
-        /* Métricas */
         .kpis { display:grid; grid-template-columns: repeat(2, 1fr); gap:12px; margin-bottom:12px; }
         .kpi { border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f0f; }
         .kval { font-size:1.4rem; font-weight:700; }
@@ -602,7 +584,7 @@ export default function VendorPage() {
   );
 }
 
-// Subcomponente para subir imagen
+/* Subcomponente para subir imagen */
 function Uploader({ disabled, onPick }) {
   const ref = useRef(null);
   return (
