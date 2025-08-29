@@ -1,41 +1,45 @@
 // components/CartSidebar.jsx
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-
-function readCart(slug) {
-  try {
-    const raw = localStorage.getItem(`cart:${slug}`);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCart(slug, items) {
-  localStorage.setItem(`cart:${slug}`, JSON.stringify(items || []));
-  // Dispara un evento manual para que otros componentes/ventanas reaccionen
-  window.dispatchEvent(new StorageEvent("storage", { key: `cart:${slug}` }));
-}
+import { readCart, clearCart as clearCartUtil } from "@/utils/cart";
 
 export default function CartSidebar({ brandSlug }) {
   const [items, setItems] = useState([]);
 
-  // Carga inicial
-  useEffect(() => {
+  function refresh() {
     if (!brandSlug) return;
     setItems(readCart(brandSlug));
+  }
+
+  // Carga inicial
+  useEffect(() => {
+    refresh();
   }, [brandSlug]);
 
-  // Reacción a cambios en otras pestañas/componentes
+  // Reaccionar a cambios (misma pestaña y/o otras)
   useEffect(() => {
     if (!brandSlug) return;
+
     const onStorage = (e) => {
-      if (e.key === `cart:${brandSlug}` || e.key === null) {
-        setItems(readCart(brandSlug));
-      }
+      if (!e) return;
+      // En la misma pestaña normalmente no dispara "storage", pero lo dejamos por si hay otras pestañas.
+      if (!e.key || e.key === `cart:${brandSlug}`) refresh();
     };
+
+    const onCartChanged = (e) => {
+      // Nuestro evento propio de carrito
+      if (!e?.detail?.slug || e.detail.slug === brandSlug) refresh();
+    };
+
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("cart:changed", onCartChanged);
+    window.addEventListener("focus", refresh);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("cart:changed", onCartChanged);
+      window.removeEventListener("focus", refresh);
+    };
   }, [brandSlug]);
 
   const total = useMemo(
@@ -47,29 +51,11 @@ export default function CartSidebar({ brandSlug }) {
     [items]
   );
 
-  function inc(i) {
-    const copy = [...items];
-    const max = Number.isFinite(copy[i]?.max) ? Math.max(0, copy[i].max) : Infinity;
-    const next = Math.min((copy[i].qty || 1) + 1, max);
-    copy[i] = { ...copy[i], qty: next };
-    setItems(copy);
-    writeCart(brandSlug, copy);
-  }
-  function dec(i) {
-    const copy = [...items];
-    const next = Math.max((copy[i].qty || 1) - 1, 1);
-    copy[i] = { ...copy[i], qty: next };
-    setItems(copy);
-    writeCart(brandSlug, copy);
-  }
-  function remove(i) {
-    const copy = items.filter((_, idx) => idx !== i);
-    setItems(copy);
-    writeCart(brandSlug, copy);
-  }
+  // Botón "Vaciar"
   function clear() {
-    setItems([]);
-    writeCart(brandSlug, []);
+    if (!brandSlug) return;
+    clearCartUtil(brandSlug);
+    refresh();
   }
 
   return (
@@ -90,25 +76,24 @@ export default function CartSidebar({ brandSlug }) {
           <ul className="list">
             {items.map((it, i) => (
               <li key={i} className="row">
+                <div className="thumb" aria-hidden>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {it.thumb ? <img src={it.thumb} alt="" /> : <div className="ph" />}
+                </div>
+
                 <div className="info">
                   <div className="name">{it.name || "Producto"}</div>
                   <div className="sub">
                     ${Number(it.price || 0).toLocaleString("es-AR")}
-                    {Number.isFinite(it.max) && (
+                    {Number.isFinite(it.max) && it.max !== Infinity && (
                       <span className="max"> · máx. {it.max}</span>
                     )}
                   </div>
                 </div>
 
                 <div className="qty">
-                  <button onClick={() => dec(i)} aria-label="Disminuir">−</button>
-                  <span>{it.qty || 1}</span>
-                  <button onClick={() => inc(i)} aria-label="Aumentar">+</button>
+                  <span>x{it.qty || 1}</span>
                 </div>
-
-                <button className="remove" onClick={() => remove(i)} title="Quitar">
-                  ✕
-                </button>
               </li>
             ))}
           </ul>
@@ -118,7 +103,6 @@ export default function CartSidebar({ brandSlug }) {
             <strong>${total.toLocaleString("es-AR")}</strong>
           </div>
 
-          {/* 🔴 ACÁ el cambio importante: ruta dinámica */}
           <Link href={`/checkout/${brandSlug}`} className="btnPrimary">
             Finalizar compra
           </Link>
@@ -130,14 +114,20 @@ export default function CartSidebar({ brandSlug }) {
         .cart__head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
         .link { background:none; border:none; color:#82aaff; cursor:pointer; }
         .empty { padding:10px; border:1px dashed #2a2a2a; border-radius:10px; text-align:center; }
+
         .list { display:grid; gap:8px; margin:8px 0; }
-        .row { display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:center; border:1px solid #1a1a1a; border-radius:10px; padding:8px; background:#0f0f0f; }
+        .row { display:grid; grid-template-columns: 52px 1fr auto; gap:10px; align-items:center; border:1px solid #1a1a1a; border-radius:10px; padding:8px; background:#0f0f0f; }
+
+        .thumb { width:52px; height:52px; border-radius:8px; overflow:hidden; border:1px solid #222; background:#0a0a0a; }
+        .thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+        .ph { width:100%; height:100%; background:#111; }
+
         .name { font-weight:600; }
         .sub { opacity:.8; font-size:.92rem; }
         .max { opacity:.75; }
-        .qty { display:flex; align-items:center; gap:8px; }
-        .qty button { width:26px; height:26px; border-radius:6px; background:#151515; border:1px solid #2a2a2a; color:#fff; cursor:pointer; }
-        .remove { width:26px; height:26px; border-radius:6px; background:#151515; border:1px solid #2a2a2a; color:#fff; cursor:pointer; }
+
+        .qty { font-weight:600; }
+
         .total { display:flex; justify-content:space-between; align-items:center; padding-top:8px; margin-top:8px; border-top:1px solid #1a1a1a; }
         .btnPrimary { display:block; text-align:center; margin-top:10px; padding:10px 12px; border-radius:10px; background:#2b5cff; border:1px solid #2b5cff; color:#fff; text-decoration:none; font-weight:600; }
         .btnPrimary:hover { filter:brightness(1.1); }
